@@ -84,7 +84,7 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
 
           <div className="space-y-2">
             <h1 className="text-5xl sm:text-8xl font-black italic tracking-tighter uppercase leading-none drop-shadow-2xl vibrant-text">
-              MIND<span className="gradient-text">WHACK</span>
+              XUBILAS<span className="gradient-text">MIND WHACK</span>
             </h1>
             <div className="flex items-center justify-center gap-3 text-slate-500 dark:text-slate-400 text-[10px] sm:text-xs font-black uppercase tracking-[0.4em]">
                <Activity size={12} className="text-fuchsia-500 sm:w-4 sm:h-4" /> 
