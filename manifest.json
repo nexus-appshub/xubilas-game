@@ -1,8 +1,8 @@
 {
-  "name": "MindWhack Neural Arena",
-  "short_name": "MindWhack",
+  "name": "XubilasMindWhack Neural Arena",
+  "short_name": "XubilasWhack",
   "description": "Design, build, and play custom brainstorming levels in the ultimate neural arena.",
-  "id": "com.mindwhack.neuralarena",
+  "id": "com.xubilaswhack.neuralarena",
   "start_url": ".",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "minimal-ui"],
@@ -48,7 +48,7 @@
       "sizes": "1080x1920",
       "type": "image/png",
       "form_factor": "narrow",
-      "label": "MindWhack Mobile Interface"
+      "label": "XubilasMindWhack Mobile Interface"
     }
   ]
 }
