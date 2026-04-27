@@ -79,3 +79,33 @@
 .animate-blob {
   animation: blob 7s infinite;
 }
+
+@keyframes slide-up {
+  0% { transform: translateY(100%); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.4s ease-out;
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(1000%); }
+}
+
+@keyframes shine {
+  0% { transform: translateX(-100%) skewX(-15deg); }
+  100% { transform: translateX(200%) skewX(-15deg); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translate(0, 0); }
+  25% { transform: translate(3px, 3px); }
+  50% { transform: translate(-3px, -3px); }
+  75% { transform: translate(-3px, 3px); }
+}
+
+.animate-shake {
+  animation: shake 0.2s ease-in-out;
+}

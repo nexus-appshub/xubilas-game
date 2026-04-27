@@ -29,6 +29,10 @@ export interface LevelLogic {
   bgmType?: 'energetic' | 'horror' | 'chill' | 'traditional' | 'none' | 'custom';
   customBgmUrl?: string;
   customWhackSoundUrl?: string;
+  customMissSoundUrl?: string;
+  customHeartLossSoundUrl?: string;
+  lifeLossTargetsOnWhack?: string[];
+  lifeLossTargetsOnMiss?: string[];
 }
 
 export interface GameLevel {
@@ -55,4 +59,4 @@ export interface UserStats {
   nextRankXp: number;
 }
 
-export type AppView = 'entry' | 'home' | 'hub' | 'editor' | 'play' | 'profile';
+export type AppView = 'entry' | 'home' | 'hub' | 'editor' | 'play' | 'profile' | 'new_games';

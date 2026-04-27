@@ -27,6 +27,14 @@ window.onerror = function(message, source, lineno, colno, error) {
 
 const rootElement = document.getElementById('root');
 
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
+      console.log('SW registration failed: ', err);
+    });
+  });
+}
+
 if (rootElement) {
   try {
     const root = ReactDOM.createRoot(rootElement);
@@ -40,14 +48,4 @@ if (rootElement) {
     // Trigger the global error handler manually if catch blocks it
     window.onerror?.('Render process crashed. Check console for details.', '', 0, 0, err as Error);
   }
-}
-
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').then(reg => {
-      console.log('ServiceWorker registered with scope:', reg.scope);
-    }).catch(err => {
-      console.debug('ServiceWorker registration failed: ', err);
-    });
-  });
 }

@@ -9,6 +9,27 @@ export const TARGET_ICONS: Record<string, string> = {
   hazard: '💣'
 };
 
+export const DEFAULT_BGM = 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/zNJxsehKJMgTPC5eLLayfZ3RcED2_1776453981029.mp3';
+
+export const AUDIO_PRESETS = {
+  bgm: [
+    { name: 'Xubilas Default', url: DEFAULT_BGM },
+    { name: 'Deep Urban', url: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-deep-urban-623.mp3' },
+    { name: 'Happy Christmas', url: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-a-very-happy-christmas-897.mp3' }
+  ],
+  whack: [
+    { name: 'Strong Punches', url: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-strong-punches-to-the-body-2198.wav' },
+    { name: 'Winning Coin', url: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-winning-a-coin-video-game-2069.wav' }
+  ],
+  miss: [
+    { name: 'Wrong Answer', url: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-wrong-answer-bass-buzzer-948.wav' }
+  ],
+  heartLoss: [
+    { name: 'Arcade Explosion', url: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-arcade-game-explosion-2759.wav' },
+    { name: 'Faaah', url: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/faaah.mp3' }
+  ]
+};
+
 export const INITIAL_LEVELS: GameLevel[] = [
   {
     id: 'default-1',
@@ -31,7 +52,8 @@ export const INITIAL_LEVELS: GameLevel[] = [
       gameType: 'Standard',
       boardTheme: 'Cyber',
       bgmType: 'custom',
-      customBgmUrl: 'https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73456.mp3',
+      customBgmUrl: DEFAULT_BGM,
+      customWhackSoundUrl: 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-strong-punches-to-the-body-2198.wav',
       speedMultiplier: 1.0,
       targetSizeMultiplier: 1.0,
       customIcons: { dog: '🐶', cat: '🐱', rat: '🐭', bonus: '⭐', hazard: '💣' }
@@ -58,7 +80,7 @@ export const INITIAL_LEVELS: GameLevel[] = [
       gameType: 'Focus',
       boardTheme: 'Void',
       bgmType: 'custom',
-      customBgmUrl: 'https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73456.mp3',
+      customBgmUrl: DEFAULT_BGM,
       speedMultiplier: 1.2,
       targetSizeMultiplier: 1.0,
       customIcons: { dog: '🐶', cat: '🐱', rat: '🐭', bonus: '⭐', hazard: '💣' }
@@ -85,7 +107,7 @@ export const INITIAL_LEVELS: GameLevel[] = [
       gameType: 'Standard',
       boardTheme: 'Cyber',
       bgmType: 'custom',
-      customBgmUrl: 'https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73456.mp3',
+      customBgmUrl: DEFAULT_BGM,
       speedMultiplier: 0.7,
       targetSizeMultiplier: 1.2,
       customIcons: { dog: '🐶', cat: '🐱', rat: '🐭', bonus: '⭐', hazard: '💣' }
@@ -112,7 +134,7 @@ export const INITIAL_LEVELS: GameLevel[] = [
       gameType: 'Standard',
       boardTheme: 'Void',
       bgmType: 'custom',
-      customBgmUrl: 'https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73456.mp3',
+      customBgmUrl: DEFAULT_BGM,
       speedMultiplier: 1.8,
       targetSizeMultiplier: 0.8,
       customIcons: { dog: '🐶', cat: '🐱', rat: '🐭', bonus: '⭐', hazard: '💣' }
@@ -139,7 +161,7 @@ export const INITIAL_LEVELS: GameLevel[] = [
       gameType: 'Insane',
       boardTheme: 'Insane',
       bgmType: 'custom',
-      customBgmUrl: 'https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73456.mp3',
+      customBgmUrl: DEFAULT_BGM,
       speedMultiplier: 1.8,
       targetSizeMultiplier: 0.9,
       customIcons: { dog: '🐶', cat: '🐱', rat: '🐭', bonus: '⭐', hazard: '💣' }

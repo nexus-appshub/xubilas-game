@@ -1,11 +1,16 @@
 
 import React, { useState, useEffect, Suspense } from 'react';
 import { AppView, GameLevel, UserStats } from './types';
-import { INITIAL_LEVELS } from './constants';
+import { INITIAL_LEVELS, DEFAULT_BGM } from './constants';
 import { soundService } from './services/soundService';
-import { getSupabase } from './services/supabaseClient';
 import { SyncService } from './services/syncService';
-import { Session } from '@supabase/supabase-js';
+import { auth } from './firebase';
+import { onAuthStateChanged, User, signOut, signInWithPopup } from 'firebase/auth';
+import { googleProvider } from './firebase';
+import { Wifi, WifiOff } from 'lucide-react';
+
+import PWAInstallPrompt from './components/PWAInstallPrompt';
+import UpdatePrompt from './components/UpdatePrompt';
 
 const CommunityHub = React.lazy(() => import('./components/CommunityHub'));
 const LevelEditor = React.lazy(() => import('./components/LevelEditor'));
@@ -16,6 +21,7 @@ const NavBar = React.lazy(() => import('./components/NavBar'));
 const EntryPage = React.lazy(() => import('./components/EntryPage'));
 const DifficultySelector = React.lazy(() => import('./components/DifficultySelector'));
 const SettingsModal = React.lazy(() => import('./components/SettingsModal'));
+const NewGamesHub = React.lazy(() => import('./components/NewGamesHub'));
 
 const DEFAULT_USER: UserStats = {
   username: "ArenaPilot",
@@ -36,14 +42,33 @@ const App: React.FC = () => {
   });
   const [sfxEnabled, setSfxEnabled] = useState(() => {
     const s = localStorage.getItem('mindwhack_sfx_enabled');
-    return s === null ? true : s === 'true'; // Default to true
+    return s === null ? true : s === 'true'; 
   });
   const [bgmEnabled, setBgmEnabled] = useState(() => {
     const s = localStorage.getItem('mindwhack_bgm_enabled');
-    return s === 'true'; // Default to false
+    return s === 'true'; 
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [customAppBgm, setCustomAppBgm] = useState<string | null>(() => localStorage.getItem('mindwhack_custom_app_bgm'));
+  const [customAppBgm, setCustomAppBgm] = useState<string | null>(() => {
+    // Aggressive cleanup of legacy keys
+    localStorage.removeItem('mindwhack_bgm');
+    
+    const saved = localStorage.getItem('mindwhack_custom_app_bgm');
+    if (!saved) return DEFAULT_BGM;
+    
+    const blacklisted = ['dirty-thinkin', 'deep-urban'];
+    const isBlacklisted = blacklisted.some(term => saved.toLowerCase().includes(term));
+    
+    if (isBlacklisted) {
+      localStorage.removeItem('mindwhack_custom_app_bgm');
+      return DEFAULT_BGM;
+    }
+    
+    return saved || DEFAULT_BGM;
+  });
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [showStatusToast, setShowStatusToast] = useState(false);
+  const [hasFetchedProfile, setHasFetchedProfile] = useState(false);
 
   const [user, setUser] = useState<UserStats>(() => {
     try {
@@ -57,7 +82,20 @@ const App: React.FC = () => {
   const [levels, setLevels] = useState<GameLevel[]>(() => {
     try {
       const s = localStorage.getItem('mindwhack_levels');
-      return s ? JSON.parse(s) : INITIAL_LEVELS;
+      const parsed = s ? JSON.parse(s) : INITIAL_LEVELS;
+      
+      // Migration: Use aggressive substring matching to remove legacy tracks
+      const blacklisted = ['dirty-thinkin', 'deep-urban'];
+      
+      return parsed.map((lvl: GameLevel) => {
+        const bgmUrl = lvl.logic.customBgmUrl || '';
+        const isBlacklisted = blacklisted.some(term => bgmUrl.toLowerCase().includes(term));
+        
+        if (isBlacklisted) {
+          return { ...lvl, logic: { ...lvl.logic, customBgmUrl: DEFAULT_BGM } };
+        }
+        return lvl;
+      });
     } catch (e) {
       console.warn("Failed to parse levels from localStorage", e);
       return INITIAL_LEVELS;
@@ -68,136 +106,169 @@ const App: React.FC = () => {
   const [editingLevel, setEditingLevel] = useState<GameLevel | null>(null);
   const [showDifficultyModal, setShowDifficultyModal] = useState(false);
   const [selectedDifficulty, setSelectedDifficulty] = useState<'Easy' | 'Medium' | 'Hard'>('Medium');
-  const [session, setSession] = useState<Session | null>(null);
-  const [isGeneratingBGM, setIsGeneratingBGM] = useState(false);
+  const [sessionUser, setSessionUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
 
   useEffect(() => {
-    const generateDefaultBGM = async () => {
-      if (localStorage.getItem('mindwhack_bgm')) return;
-      
-      setIsGeneratingBGM(true);
-      try {
-        const { GoogleGenAI, Modality } = await import("@google/genai");
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-        const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-tts",
-          contents: [{ parts: [{ text: 'Say cheerfully: Welcome to MindWhack! Focus your mind, hit the targets, and reach for the stars. Neural link established. Play now!' }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: 'Zephyr' },
-              },
-            },
-          },
-        });
+    let isChecking = false;
 
-        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (base64Audio) {
-          localStorage.setItem('mindwhack_bgm', `data:audio/mp3;base64,${base64Audio}`);
-          // Update initial levels to use this BGM if they were using the old one
-          const updatedLevels = INITIAL_LEVELS.map(l => ({
-            ...l,
-            logic: {
-              ...l.logic,
-              customBgmUrl: `data:audio/mp3;base64,${base64Audio}`
-            }
-          }));
-          setLevels(prev => {
-            const s = localStorage.getItem('mindwhack_levels');
-            if (!s) return updatedLevels;
-            const current = JSON.parse(s);
-            return current.map((l: any) => {
-              if (l.id.startsWith('default-')) {
-                return { ...l, logic: { ...l.logic, customBgmUrl: `data:audio/mp3;base64,${base64Audio}` } };
-              }
-              return l;
-            });
-          });
-        }
-      } catch (e) {
-        console.error("Failed to generate default BGM:", e);
-      } finally {
-        setIsGeneratingBGM(false);
-      }
-    };
-
-    generateDefaultBGM();
-  }, []);
-
-  useEffect(() => {
     const handleOnline = () => {
-      console.log("App is online, triggering sync...");
-      if (session?.user) {
-        SyncService.syncProfile(user, session.user.id);
-        levels.forEach(level => {
-          if (!level.id.startsWith('default-') && !level.isLocalOnly) {
-            SyncService.syncLevel(level, session.user.id);
+      setIsOnline(prev => {
+        if (!prev) {
+          setShowStatusToast(true);
+          setTimeout(() => setShowStatusToast(false), 3000);
+          console.log("App is actively online, triggering sync...");
+          if (sessionUser) {
+            SyncService.syncProfile(user, sessionUser.uid);
+            levels.forEach(level => {
+              if (!level.id.startsWith('default-') && !level.isLocalOnly) {
+                SyncService.syncLevel(level, sessionUser.uid);
+              }
+            });
           }
+        }
+        return true;
+      });
+    };
+
+    const handleOffline = () => {
+      setIsOnline(prev => {
+        if (prev) {
+          setShowStatusToast(true);
+          setTimeout(() => setShowStatusToast(false), 3000);
+        }
+        return false;
+      });
+    };
+
+    // Preload essential audio for offline PWA capabilities
+    const preloadAudio = async () => {
+      try {
+        if (!navigator.onLine) return;
+        const defaultWhackUrl = 'https://nsfiahwdfmnrrrmjkxjd.supabase.co/storage/v1/object/public/level-assets/bgm/mixkit-strong-punches-to-the-body-2198.wav';
+        await Promise.all([
+          fetch(DEFAULT_BGM).catch(() => {}),
+          fetch(defaultWhackUrl).catch(() => {})
+        ]);
+        console.log("Essential audio precached.");
+      } catch (e) {
+        // Silent fail
+      }
+    };
+    preloadAudio();
+
+    // Active Internet Check
+    const activelyCheckConnection = async () => {
+      if (isChecking) return;
+      isChecking = true;
+      
+      // Fast bypass if physical network link is fully down
+      if (!navigator.onLine) {
+        handleOffline();
+        isChecking = false;
+        return;
+      }
+
+      try {
+        // Lightweight request to verify true internet flow
+        const response = await fetch(window.location.origin + '/?ping=' + Date.now(), { 
+          method: 'HEAD', 
+          cache: 'no-store' 
         });
+        
+        if (response.ok || response.type === 'opaque') {
+          handleOnline();
+        } else {
+          handleOffline();
+        }
+      } catch (err) {
+        handleOffline();
+      } finally {
+        isChecking = false;
       }
     };
 
-    window.addEventListener('online', handleOnline);
-    return () => window.removeEventListener('online', handleOnline);
-  }, [session, user, levels]);
+    // Initial check immediately
+    activelyCheckConnection();
+
+    // Recheck continuously to keep connection sticky and verify active data
+    const pingInterval = setInterval(activelyCheckConnection, 10000);
+
+    // Listen to native events to fire active checks immediately on physical switch
+    window.addEventListener('online', activelyCheckConnection);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      clearInterval(pingInterval);
+      window.removeEventListener('online', activelyCheckConnection);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [sessionUser, user, levels]);
 
   useEffect(() => {
-    try {
-      const supabase = getSupabase();
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        setSession(session);
-      });
-
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setSession(session);
-      });
-
-      return () => subscription.unsubscribe();
-    } catch (e) {
-      console.warn("Supabase not configured or offline, running in local mode.");
-    }
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setSessionUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (session?.user) {
+    if (sessionUser) {
       const fetchProfile = async () => {
-        const remoteProfile = await SyncService.fetchUserProfile(session.user.id);
-        if (remoteProfile) {
-          setUser(u => ({
-            ...u,
-            ...remoteProfile,
-            nextRankXp: (Math.floor((remoteProfile.xp || 0) / 1000) + 1) * 1000
-          }));
-        } else {
-          // Fallback to local or create new
-          const newProfile = {
-            username: session.user.user_metadata.username || session.user.email?.split('@')[0],
-            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${session.user.id}`,
-            totalWhacks: user.totalWhacks,
-            xp: user.xp,
-            rank: user.rank
-          };
-          SyncService.syncProfile({ ...user, ...newProfile }, session.user.id);
+        try {
+          const remoteProfile = await SyncService.fetchUserProfile(sessionUser.uid);
+          if (remoteProfile) {
+            setUser(u => {
+              const updated = {
+                ...u,
+                ...remoteProfile,
+                nextRankXp: (Math.floor((remoteProfile.xp || 0) / 1000) + 1) * 1000
+              };
+              localStorage.setItem('mindwhack_user', JSON.stringify(updated));
+              return updated;
+            });
+          } else {
+            // New user, push current state to cloud
+            await SyncService.syncProfile(user, sessionUser.uid);
+          }
+        } catch (e) {
+          console.error("Fetch profile failed:", e);
+        } finally {
+          setHasFetchedProfile(true);
         }
       };
       fetchProfile();
+    } else {
+      setHasFetchedProfile(false);
     }
-  }, [session]);
+  }, [sessionUser]);
 
   useEffect(() => {
     const fetchLevels = async () => {
       const remoteLevels = await SyncService.fetchRemoteLevels();
-      if (remoteLevels.length > 0) {
+      
+      // Migration: Use aggressive substring matching to remove legacy tracks for remote levels
+      const blacklisted = ['dirty-thinkin', 'deep-urban'];
+      
+      const normalizedRemote = remoteLevels.map(lvl => {
+        const bgmUrl = lvl.logic.customBgmUrl || '';
+        const isBlacklisted = blacklisted.some(term => bgmUrl.toLowerCase().includes(term));
+        
+        if (isBlacklisted) {
+          return { ...lvl, logic: { ...lvl.logic, customBgmUrl: DEFAULT_BGM } };
+        }
+        return lvl;
+      });
+
+      if (normalizedRemote.length > 0) {
         setLevels(prev => {
-          const combined = [...remoteLevels];
-          // Keep local levels that aren't in remote yet
+          const combined = [...normalizedRemote];
           prev.forEach(pl => {
             if (!combined.find(cl => cl.id === pl.id)) {
               combined.push(pl);
             }
           });
-          // Ensure defaults are there
           INITIAL_LEVELS.forEach(il => {
             if (!combined.find(cl => cl.id === il.id)) {
               combined.push(il);
@@ -207,14 +278,16 @@ const App: React.FC = () => {
         });
       }
     };
-    fetchLevels();
-  }, [session]);
+    if (isAuthReady) {
+      fetchLevels();
+    }
+  }, [isAuthReady]);
 
   useEffect(() => {
-    if (session?.user) {
-      SyncService.syncProfile(user, session.user.id);
+    if (sessionUser && hasFetchedProfile) {
+      SyncService.syncProfile(user, sessionUser.uid);
     }
-  }, [user.xp, user.totalWhacks, user.username, user.avatar, session]);
+  }, [user.xp, user.totalWhacks, user.username, user.avatar, sessionUser, hasFetchedProfile]);
 
   useEffect(() => {
     soundService.setSfxEnabled(sfxEnabled);
@@ -227,15 +300,10 @@ const App: React.FC = () => {
   }, [bgmEnabled]);
 
   useEffect(() => {
-    const isMainView = view === 'home' || view === 'hub' || view === 'profile' || view === 'editor';
+    const isMainView = view === 'home' || view === 'hub' || view === 'profile' || view === 'editor' || view === 'new_games';
     if (isMainView && bgmEnabled) {
-      const bgmUrl = customAppBgm || localStorage.getItem('mindwhack_bgm');
-      if (bgmUrl) {
-        soundService.startBGM('custom', bgmUrl);
-      } else {
-        // High-quality Chill Lo-Fi track
-        soundService.startBGM('custom', 'https://cdn.pixabay.com/audio/2022/05/27/audio_1808f3030e.mp3');
-      }
+      const bgmUrl = customAppBgm || DEFAULT_BGM;
+      soundService.startBGM('custom', bgmUrl);
     } else if (view === 'entry' || view === 'play' || !bgmEnabled) {
       // Entry has its own vibe, Play has level BGM
       if (view !== 'play') soundService.stopBGM();
@@ -304,28 +372,42 @@ const App: React.FC = () => {
         nextRankXp: (rankIdx + 1) * 1000
       };
 
-      if (session?.user) {
-        SyncService.syncProfile(updatedUser, session.user.id);
+      if (sessionUser) {
+        SyncService.syncProfile(updatedUser, sessionUser.uid);
       }
 
       return updatedUser;
     });
     
-    setView('hub');
+    setView('home');
     setActiveLevel(null);
+  };
+
+  const handleLogin = async () => {
+    soundService.playClick();
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (e) {
+      console.warn("Login failed", e);
+      alert("Sign in failed. Check your connection or popup blocker.");
+    }
   };
 
   const handleLogout = async () => {
     soundService.playClick();
     try {
-      await getSupabase().auth.signOut();
+      await signOut(auth);
+      // Only clear storage and state IF signout succeeds
+      localStorage.removeItem('mindwhack_user');
+      setUser({ ...DEFAULT_USER, avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${Date.now()}` });
+      setSessionUser(null);
+      setHasFetchedProfile(false);
+      setView('entry');
+      setIsSettingsOpen(false);
     } catch (e) {
-      console.warn("Logout failed or Supabase not configured.");
+      console.warn("Logout failed", e);
+      alert("Sign out failed. Check your connection.");
     }
-    localStorage.removeItem('mindwhack_user');
-    setUser({ ...DEFAULT_USER, avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${Date.now()}` });
-    setView('entry');
-    setIsSettingsOpen(false);
   };
 
   const toggleSfx = () => {
@@ -356,11 +438,16 @@ const App: React.FC = () => {
           <div className="absolute inset-0 border-4 border-fuchsia-500 border-t-transparent rounded-full animate-spin" />
           <div className="absolute inset-0 flex items-center justify-center text-4xl drop-shadow-2xl">🧠</div>
         </div>
-        <h1 className="text-3xl font-black italic tracking-tighter uppercase mb-2 bg-clip-text text-transparent bg-linear-to-br from-fuchsia-500 to-blue-500">MindWhack</h1>
+        <h1 className="text-3xl font-black italic tracking-tighter uppercase mb-2 bg-clip-text text-transparent bg-linear-to-br from-fuchsia-500 to-blue-500">Xubilas Mind Whack</h1>
         <div className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.4em] animate-pulse">Initializing Neural Link...</div>
       </div>
     );
   }
+
+  const handleDirectPlay = (level: GameLevel) => {
+    setActiveLevel(level);
+    setShowDifficultyModal(true);
+  };
 
   const showNav = view !== 'play' && view !== 'entry' && view !== 'editor';
 
@@ -370,21 +457,29 @@ const App: React.FC = () => {
     <div className={`fixed inset-0 flex flex-col overflow-hidden select-none touch-none transition-colors duration-500 bg-app-bg text-app-text ${theme}`}>
       <main className="flex-1 overflow-y-auto relative z-10 w-full max-w-screen-2xl mx-auto">
         <Suspense fallback={<div className="p-10 text-center opacity-50">Loading...</div>}>
-          {view === 'entry' && <EntryPage onEnter={() => setView('home')} />}
+          {view === 'entry' && (
+            <EntryPage 
+              onEnter={() => setView('home')} 
+              onPlayFeatured={() => handleDirectPlay(featuredLevel)} 
+            />
+          )}
           {view === 'home' && <HomePage stats={user} featuredLevel={featuredLevel} onPlayFeatured={handleStartMission} onGoToHub={() => setView('hub')} onUpgrade={() => handleEditLevel(featuredLevel)} onOpenSettings={() => setIsSettingsOpen(true)} />}
+          {view === 'new_games' && <NewGamesHub />}
           {view === 'hub' && <CommunityHub levels={levels} onPlay={handleStartMission} onCreate={() => setView('editor')} onImport={(l) => setLevels([l, ...levels])} onEdit={handleEditLevel} />}
           {view === 'editor' && (
             <LevelEditor 
               initialLevel={editingLevel}
+              onLogin={handleLogin}
+              sessionUser={sessionUser}
               onSave={(l) => { 
-                const levelToSave = { ...l, isLocalOnly: !session };
+                const levelToSave = { ...l, isLocalOnly: !sessionUser };
                 if (editingLevel) {
                   setLevels(levels.map(lvl => lvl.id === editingLevel.id ? levelToSave : lvl));
                 } else {
                   setLevels([levelToSave, ...levels]); 
                 }
-                if (session?.user && !levelToSave.isLocalOnly) {
-                  SyncService.syncLevel(levelToSave, session.user.id);
+                if (sessionUser && !levelToSave.isLocalOnly) {
+                  SyncService.syncLevel(levelToSave, sessionUser.uid);
                 }
                 setEditingLevel(null);
                 setView('hub'); 
@@ -403,7 +498,7 @@ const App: React.FC = () => {
               onLogout={handleLogout} 
               onOpenSettings={() => setIsSettingsOpen(true)} 
               onEditLevel={handleEditLevel}
-              isAuthenticated={!!session}
+              isAuthenticated={!!sessionUser}
               onAuthSuccess={() => setView('profile')}
             />
           )}
@@ -412,7 +507,7 @@ const App: React.FC = () => {
             <LevelPlayer 
               level={activeLevel} 
               difficulty={selectedDifficulty} 
-              onExit={() => setView('hub')} 
+              onExit={() => setView('home')} 
               onFinish={handleFinishGame} 
               onUpgrade={handleEditLevel}
             />
@@ -445,6 +540,8 @@ const App: React.FC = () => {
             theme={theme}
             onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
             onLogout={handleLogout}
+            onLogin={handleLogin}
+            sessionUser={sessionUser}
             customAppBgm={customAppBgm}
             onUpdateBgm={setCustomAppBgm}
           />
@@ -453,13 +550,28 @@ const App: React.FC = () => {
 
       {showNav && (
         <Suspense fallback={null}>
-          <NavBar 
-            currentView={view} 
-            onNavigate={handleNavigate} 
-            theme={theme} 
-            toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} 
+          <NavBar
+            currentView={view}
+            onNavigate={handleNavigate}
+            theme={theme}
+            toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
           />
         </Suspense>
+      )}
+
+      <PWAInstallPrompt />
+      <UpdatePrompt />
+
+      {/* Connectivity Status Toast */}
+      {showStatusToast && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[300] animate-in slide-in-from-top-4 fade-in duration-500">
+          <div className={`px-6 py-3 rounded-2xl flex items-center gap-3 backdrop-blur-xl border ${isOnline ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' : 'bg-rose-500/10 border-rose-500/20 text-rose-500'}`}>
+            {isOnline ? <Wifi size={18} /> : <WifiOff size={18} />}
+            <span className="text-[10px] font-black uppercase tracking-widest italic font-mono">
+              Network: {isOnline ? 'Online - Synchronizing' : 'Offline - Local Mode'}
+            </span>
+          </div>
+        </div>
       )}
     </div>
   );
