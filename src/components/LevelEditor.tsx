@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { GameLevel, LevelLogic, BoardTheme, TargetType, GameType, ThemeConfig } from '../types';
 import Button from './Button';
 import GameHole from './GameHole';
-import { getSupabase } from '../services/supabaseClient';
+import { soundService } from '../services/soundService';
+import { auth } from '../firebase';
+import { uploadToSupabase } from '../supabase';
+import { compressImageFallback } from '../utils/imageCompressor';
+import { AUDIO_PRESETS, DEFAULT_BGM } from '../constants';
 import { 
   X, Palette, Clock, Target, Info, PlayCircle, Sliders, Plus, Trash2, Upload, RefreshCcw, Loader2, Crosshair, Zap, Focus, Timer, Activity, Shield, Cpu, ChevronLeft, Type as TypeIcon, Check, AlertCircle, FastForward, LayoutGrid, Edit3, Music
 } from 'lucide-react';
@@ -11,6 +15,8 @@ interface LevelEditorProps {
   initialLevel?: GameLevel | null;
   onSave: (level: GameLevel) => void;
   onCancel: () => void;
+  onLogin: () => void;
+  sessionUser: any;
 }
 
 const PRESET_ICONS = [
@@ -33,8 +39,8 @@ const MISSION_TYPE_PRESETS: Record<GameType, Partial<LevelLogic> & { desc: strin
     targetWeights: { dog: 45, rat: 35, cat: 10, bonus: 5, hazard: 5 },
     targetScores: { dog: 5, rat: 3, cat: -10, bonus: 20, hazard: -15 },
     targetDecayFactors: { dog: 1.0, rat: 1.0, cat: 1.0, bonus: 1.0, hazard: 1.0 },
-    bgmType: 'energetic',
-    customBgmUrl: ''
+    bgmType: 'custom',
+    customBgmUrl: DEFAULT_BGM
   },
   'Catch': {
     desc: 'High spawn rate, focus on collecting bonus points.',
@@ -46,8 +52,8 @@ const MISSION_TYPE_PRESETS: Record<GameType, Partial<LevelLogic> & { desc: strin
     targetWeights: { dog: 60, rat: 20, cat: 5, bonus: 15, hazard: 0 },
     targetScores: { dog: 10, rat: 5, cat: -5, bonus: 30, hazard: 0 },
     targetDecayFactors: { dog: 0.8, rat: 0.8, cat: 1.0, bonus: 0.7, hazard: 1.0 },
-    bgmType: 'energetic',
-    customBgmUrl: ''
+    bgmType: 'custom',
+    customBgmUrl: DEFAULT_BGM
   },
   'Focus': {
     desc: 'Slow but punishing. Every miss or wrong hit counts.',
@@ -59,8 +65,8 @@ const MISSION_TYPE_PRESETS: Record<GameType, Partial<LevelLogic> & { desc: strin
     targetWeights: { dog: 20, rat: 20, cat: 20, bonus: 10, hazard: 30 },
     targetScores: { dog: 15, rat: 10, cat: -20, bonus: 50, hazard: -50 },
     targetDecayFactors: { dog: 1.2, rat: 1.2, cat: 1.0, bonus: 1.5, hazard: 1.0 },
-    bgmType: 'energetic',
-    customBgmUrl: ''
+    bgmType: 'custom',
+    customBgmUrl: DEFAULT_BGM
   },
   'Insane': {
     desc: 'Maximum chaos. Extreme speed and high stakes.',
@@ -72,8 +78,8 @@ const MISSION_TYPE_PRESETS: Record<GameType, Partial<LevelLogic> & { desc: strin
     targetWeights: { dog: 30, rat: 30, cat: 10, bonus: 10, hazard: 20 },
     targetScores: { dog: 20, rat: 15, cat: -30, bonus: 100, hazard: -100 },
     targetDecayFactors: { dog: 1.0, rat: 1.0, cat: 1.0, bonus: 1.0, hazard: 1.0 },
-    bgmType: 'energetic',
-    customBgmUrl: ''
+    bgmType: 'custom',
+    customBgmUrl: DEFAULT_BGM
   }
 };
 
@@ -91,8 +97,8 @@ const INITIAL_LOGIC: LevelLogic = {
   boardTheme: 'Cyber',
   speedMultiplier: 1.0,
   targetSizeMultiplier: 1.0,
-  bgmType: 'energetic',
-  customBgmUrl: '',
+  bgmType: 'custom',
+  customBgmUrl: DEFAULT_BGM,
   themeConfig: {
     bgStyle: 'none',
     primaryColor: '',
@@ -102,7 +108,7 @@ const INITIAL_LOGIC: LevelLogic = {
   }
 };
 
-const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCancel }) => {
+const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCancel, onLogin, sessionUser }) => {
   const [name, setName] = useState(initialLevel?.name || '');
   const [description, setDescription] = useState(initialLevel?.description || '');
   const [gridSize, setGridSize] = useState(initialLevel?.gridSize || 3);
@@ -113,6 +119,7 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
   const [completedModes, setCompletedModes] = useState<string[]>([]);
   const [showCompletionSuggestion, setShowCompletionSuggestion] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
   
   // Upload Flow States
   const [showUploadConfirm, setShowUploadConfirm] = useState(false);
@@ -126,62 +133,98 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
   const [stagedIcon, setStagedIcon] = useState<string>('');
   const [pickerError, setPickerError] = useState<string | null>(null);
   
+  // Scroll visibility
+  const [showUI, setShowUI] = useState(true);
+  const [lastScrollY, setLastScrollY] = useState(0);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const currentScrollY = e.currentTarget.scrollTop;
+    if (currentScrollY > lastScrollY && currentScrollY > 50) {
+      setShowUI(false);
+    } else if (currentScrollY < lastScrollY) {
+      setShowUI(true);
+    }
+    setLastScrollY(currentScrollY);
+  };
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgImageInputRef = useRef<HTMLInputElement>(null);
   const bgmInputRef = useRef<HTMLInputElement>(null);
   const whackSoundInputRef = useRef<HTMLInputElement>(null);
+  const missSoundInputRef = useRef<HTMLInputElement>(null);
+  const heartLossSoundInputRef = useRef<HTMLInputElement>(null);
 
-  const handleBgmFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Helper for uploading files. Favors Supabase Storage to prevent Firestore 1MB limits.
+  const uploadToStorageWithFallback = async (file: File, folder: string, bucket: string, callback: (url: string) => void) => {
+    const reader = new FileReader();
 
-    if (file.size > 10 * 1024 * 1024) {
-      alert("Neural Data Limit Exceeded (Max 10MB).");
+    const isGuest = !auth.currentUser;
+    
+    const processLocalFile = async () => {
+      if (!isGuest) console.warn("Falling back to Base64 (may hit Firestore 1MB limit)");
+      
+      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+      if (file.size > 700 * 1024 && file.type.startsWith('image/') && !isGif) {
+         try {
+           const compressedBase64 = await compressImageFallback(file, 700);
+           callback(compressedBase64);
+           return;
+         } catch (e) {
+           console.warn("Compression failed", e);
+         }
+      }
+
+      if (file.size > 700 * 1024) {
+        alert(isGuest 
+          ? "Local storage limit reached (700KB). Guest sessions are limited to smaller files to ensure cross-device consistency. Please sign in for unlimited cloud storage." 
+          : "Storage unavailable: File exceeds the 700KB limit for database fallback. Configure Supabase or use a smaller file.");
+        return;
+      }
+      reader.onloadend = () => callback(reader.result as string);
+      reader.onerror = () => alert("Failed to process local file.");
+      reader.readAsDataURL(file);
+    };
+
+    if (isGuest) {
+      await processLocalFile();
       return;
     }
 
-    setPendingBgmFile(file);
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      updateLogic({ customBgmUrl: reader.result as string });
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const uploadBgmToSupabase = async (file: File): Promise<string | null> => {
-    try {
-      const supabase = getSupabase();
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return null;
-
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${session.user.id}-${Date.now()}.${fileExt}`;
-      const filePath = `bgm/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('level-assets')
-        .upload(filePath, file);
-
-      if (uploadError) {
-        // Fallback to level-icons if level-assets doesn't exist
-        const { error: fallbackError } = await supabase.storage
-          .from('level-icons')
-          .upload(filePath, file);
-        if (fallbackError) throw uploadError;
-      }
-
-      const { data: { publicUrl } } = supabase.storage
-        .from(uploadError ? 'level-icons' : 'level-assets')
-        .getPublicUrl(filePath);
-
-      return publicUrl;
-    } catch (error) {
-      console.error("BGM upload failed:", error);
-      return null;
+    const uid = auth.currentUser?.uid || 'guest';
+    let fileExtension = file.name.split('.').pop();
+    if (!fileExtension || fileExtension === file.name) {
+      fileExtension = file.type.split('/').pop() || 'file';
+    }
+    if (file.type === 'image/gif') fileExtension = 'gif';
+    
+    const supabaseUrl = await uploadToSupabase(file, `levels/${uid}/${folder}_${Date.now()}.${fileExtension}`, bucket);
+    if (supabaseUrl) {
+      callback(supabaseUrl);
+    } else {
+      alert(`Supabase upload to bucket '${bucket}' failed. Falling back to local offline storage.`);
+      await processLocalFile();
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>, callback: (data: string) => void) => {
+  const handleBgmFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > MAX_FILE_SIZE) {
+      alert("Audio Data Limit Exceeded (Max 6MB).");
+      return;
+    }
+
+    setIsLoading(true);
+    await uploadToStorageWithFallback(file, 'bgm', 'level-assets', (url) => {
+      updateLogic({ customBgmUrl: url });
+      // Play immediately after successful upload
+      soundService.startBGM('custom', url);
+      setIsLoading(false);
+    });
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>, callback: (data: string) => void) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -190,11 +233,11 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
       return;
     }
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      callback(reader.result as string);
-    };
-    reader.readAsDataURL(file);
+    setIsLoading(true);
+    await uploadToStorageWithFallback(file, 'bg', 'level-assets', (url) => {
+      callback(url);
+      setIsLoading(false);
+    });
   };
 
   const [previewActive, setPreviewActive] = useState(false);
@@ -278,54 +321,17 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
     setShowUploadConfirm(false);
     setIsLoading(true);
 
-    const fallbackToLocal = () => {
-      setStagedIcon(pendingFilePreview || '');
-      setIsLoading(false);
-      setShowUploadSuccess(true);
-      setPendingFile(null);
-      setPendingFilePreview(null);
-    };
-
     try {
-      let supabase;
-      try {
-        supabase = getSupabase();
-      } catch (err) {
-        console.warn("Supabase not configured, falling back to local upload.");
-        fallbackToLocal();
-        return;
-      }
-
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        // If not logged in, fallback to base64 for preview/local use
-        fallbackToLocal();
-        return;
-      }
-
-      const fileExt = pendingFile.name.split('.').pop();
-      const fileName = `${session.user.id}-${Math.random()}.${fileExt}`;
-      const filePath = `icons/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('level-icons')
-        .upload(filePath, pendingFile);
-
-      if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('level-icons')
-        .getPublicUrl(filePath);
-
-      setStagedIcon(publicUrl);
+      await uploadToStorageWithFallback(pendingFile, 'icon', 'level-icons', (url) => {
+        setStagedIcon(url);
+        setIsLoading(false);
+        setShowUploadSuccess(true);
+        setPendingFile(null);
+        setPendingFilePreview(null);
+      });
+    } catch (err) {
       setIsLoading(false);
-      setShowUploadSuccess(true);
-      setPendingFile(null);
-      setPendingFilePreview(null);
-    } catch (error: any) {
-      console.error("Supabase upload failed, falling back to local:", error);
-      fallbackToLocal();
+      setPickerError("Failed to upload image.");
     }
   };
 
@@ -386,8 +392,8 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
   };
 
   const handlePublish = async () => {
-    if (!name) {
-      alert("Mission Callsign Required.");
+    if (!name && !initialLevel) {
+      alert("Mission Callsign Required for new arenas.");
       return;
     }
 
@@ -395,24 +401,11 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
     let finalLogic = { ...logic };
 
     try {
-      // If we have a pending BGM file, upload it now
-      if (pendingBgmFile) {
-        const uploadedUrl = await uploadBgmToSupabase(pendingBgmFile);
-        if (uploadedUrl) {
-          finalLogic.customBgmUrl = uploadedUrl;
-          setLogic(finalLogic);
-          setPendingBgmFile(null); // Clear pending file after successful upload
-        } else {
-          // If upload failed, we should probably warn or clear the base64 to avoid DB bloat
-          console.warn("BGM upload failed, clearing custom BGM to prevent database bloat.");
-          finalLogic.customBgmUrl = '';
-          setLogic(finalLogic);
-          alert("Audio upload failed. Level will be published without custom music.");
+      if (finalLogic.customBgmUrl?.startsWith('data:')) {
+        // Warning if base64 is too large for db
+        if (finalLogic.customBgmUrl.length > 800000) {
+          alert('Custom audio data is too large for database sync, please provide an external URL or expect sync issues.');
         }
-      } else if (finalLogic.customBgmUrl?.startsWith('data:')) {
-        // Safety check: don't allow base64 strings to be published
-        finalLogic.customBgmUrl = '';
-        setLogic(finalLogic);
       }
     } catch (err) {
       console.error("Publish error:", err);
@@ -426,25 +419,14 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
   };
 
   const handleFinalSave = async () => {
-    let session: any = null;
-    try {
-      const supabase = getSupabase();
-      const { data } = await supabase.auth.getSession();
-      session = data.session;
-    } catch (e) {
-      console.warn("Supabase not configured, saving locally only.");
-    }
+    let sessionUser = auth.currentUser;
     
-    // Final safety check: ensure no base64 strings leak into the database
     const sanitizedLogic = { ...logic };
-    if (sanitizedLogic.customBgmUrl?.startsWith('data:')) {
-      sanitizedLogic.customBgmUrl = '';
-    }
 
     const newLevel: GameLevel = {
       id: initialLevel?.id || Math.random().toString(36).substr(2, 9),
       name,
-      author: initialLevel?.author || session?.user?.user_metadata?.username || 'Pilot',
+      author: initialLevel?.author || sessionUser?.displayName || 'Pilot',
       description,
       gridSize,
       logic: sanitizedLogic,
@@ -453,28 +435,6 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
       plays: initialLevel?.plays || 0,
       createdAt: initialLevel?.createdAt || Date.now()
     };
-
-    if (session?.user) {
-      try {
-        const supabase = getSupabase();
-        const { error } = await supabase.from('levels').insert({
-          id: newLevel.id,
-          name: newLevel.name,
-          author: newLevel.author,
-          description: newLevel.description,
-          grid_size: newLevel.gridSize,
-          logic: newLevel.logic,
-          author_id: session.user.id,
-          rating: newLevel.rating,
-          rating_count: newLevel.ratingCount,
-          plays: newLevel.plays,
-          created_at: new Date(newLevel.createdAt).toISOString()
-        });
-        if (error) throw error;
-      } catch (err) {
-        console.error("Failed to save level to Supabase:", err);
-      }
-    }
 
     onSave(newLevel);
   };
@@ -722,6 +682,24 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                 <Music size={16} className="text-blue-500" />
                 <h3 className={moduleTitleStyle}>Audio Protocol</h3>
               </div>
+
+              {!sessionUser && (
+                <div className="p-4 rounded-2xl bg-blue-600/15 dark:bg-blue-500/10 border border-blue-600/20 dark:border-blue-500/20 flex items-start gap-3 animate-in fade-in duration-500">
+                  <Zap size={16} className="text-blue-600 dark:text-blue-500 mt-0.5 shrink-0" />
+                  <div className="space-y-2">
+                    <p className="text-[9px] font-black text-blue-700 dark:text-blue-400 uppercase tracking-widest leading-relaxed">
+                      Sign in with Google to save your custom music and whack sounds permanently to your profile.
+                    </p>
+                    <button 
+                      onClick={onLogin}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-lg shadow-blue-600/20"
+                    >
+                      Sign in for Cloud Storage
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-6">
                 <div>
                   <label className={labelStyle}>Background Music Type</label>
@@ -745,9 +723,9 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                 </div>
 
                 {logic.bgmType === 'custom' && (
-                  <div className="bg-white/5 p-6 rounded-[2.5rem] border border-white/5 space-y-4 animate-in zoom-in-95">
+                  <div className="bg-slate-200/50 dark:bg-white/5 p-6 rounded-[2.5rem] border border-black/5 dark:border-white/5 space-y-4 animate-in zoom-in-95">
                     <div className="flex items-center gap-3 mb-2">
-                       <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500">
+                       <div className="w-10 h-10 bg-blue-600/10 dark:bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-700 dark:text-blue-400">
                           <Music size={20} />
                        </div>
                        <div>
@@ -757,11 +735,31 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                     </div>
 
                     <div className="space-y-3">
+                      <div className="flex flex-wrap gap-2 mb-2 bg-black/20 p-2 rounded-xl border border-white/5">
+                        {AUDIO_PRESETS.bgm.map(preset => (
+                          <button
+                            key={preset.url}
+                            onClick={() => {
+                              updateLogic({ customBgmUrl: preset.url, bgmType: 'custom' });
+                              soundService.startBGM('custom', preset.url);
+                            }}
+                            className={`px-3 py-1 text-[9px] font-black rounded-lg transition-all border ${logic.customBgmUrl === preset.url ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-300/50 dark:bg-white/5 border-black/5 dark:border-white/10 text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/10'}`}
+                          >
+                            {preset.name}
+                          </button>
+                        ))}
+                      </div>
                       <div className="flex gap-2">
                         <div className="relative flex-1">
                           <input 
                             value={logic.customBgmUrl || ''} 
-                            onChange={(e) => updateLogic({ customBgmUrl: e.target.value })} 
+                            onChange={(e) => {
+                              const url = e.target.value;
+                              updateLogic({ customBgmUrl: url });
+                              if ((url.startsWith('https://') || url.startsWith('http://')) && url.endsWith('.mp3')) {
+                                soundService.startBGM('custom', url);
+                              }
+                            }} 
                             placeholder="Paste MP3 URL..." 
                             className={`${inputStyle} pr-12`} 
                           />
@@ -801,9 +799,9 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                   </div>
                 )}
 
-                <div className="bg-white/5 p-6 rounded-[2.5rem] border border-white/5 space-y-4">
+                <div className="bg-slate-200/50 dark:bg-white/5 p-6 rounded-[2.5rem] border border-black/5 dark:border-white/5 space-y-4">
                   <div className="flex items-center gap-3 mb-2">
-                     <div className="w-10 h-10 bg-fuchsia-500/10 rounded-xl flex items-center justify-center text-fuchsia-500">
+                     <div className="w-10 h-10 bg-fuchsia-500/10 rounded-xl flex items-center justify-center text-fuchsia-600 dark:text-fuchsia-500">
                         <Zap size={20} />
                      </div>
                      <div>
@@ -812,10 +810,31 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                      </div>
                   </div>
 
+                  <div className="flex flex-wrap gap-2 mb-2 bg-fuchsia-500/10 p-2 rounded-xl border border-fuchsia-500/10">
+                    {AUDIO_PRESETS.whack.map(preset => (
+                      <button
+                        key={preset.url}
+                        onClick={() => {
+                          updateLogic({ customWhackSoundUrl: preset.url });
+                          soundService.setCustomWhackSound(preset.url).then(() => soundService.playWhack());
+                        }}
+                        className={`px-3 py-1 text-[9px] font-black rounded-lg transition-all border ${logic.customWhackSoundUrl === preset.url ? 'bg-fuchsia-600 border-fuchsia-500 text-white' : 'bg-slate-300/50 dark:bg-white/5 border-black/5 dark:border-white/10 text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/10'}`}
+                      >
+                        {preset.name}
+                      </button>
+                    ))}
+                  </div>
+
                   <div className="flex gap-2">
                     <input 
                       value={logic.customWhackSoundUrl || ''} 
-                      onChange={(e) => updateLogic({ customWhackSoundUrl: e.target.value })} 
+                      onChange={(e) => {
+                        const url = e.target.value;
+                        updateLogic({ customWhackSoundUrl: url });
+                        if (url.startsWith('https://') || url.startsWith('data:')) {
+                           soundService.setCustomWhackSound(url).then(() => soundService.playWhack());
+                        }
+                      }} 
                       placeholder="SFX URL or upload..." 
                       className={`${inputStyle} flex-1`} 
                     />
@@ -832,7 +851,133 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                     ref={whackSoundInputRef} 
                     className="hidden" 
                     accept="audio/*" 
-                    onChange={(e) => handleFileSelect(e, (data) => updateLogic({ customWhackSoundUrl: data }))} 
+                    onChange={(e) => handleFileSelect(e, async (data) => {
+                      updateLogic({ customWhackSoundUrl: data });
+                      await soundService.setCustomWhackSound(data);
+                      soundService.playWhack();
+                    })} 
+                  />
+                </div>
+
+                {/* Point Minus Sound */}
+                <div className="bg-slate-200/50 dark:bg-white/5 p-6 rounded-[2.5rem] border border-black/5 dark:border-white/5 space-y-4">
+                  <div className="flex items-center gap-3 mb-2">
+                     <div className="w-10 h-10 bg-rose-600/10 dark:bg-rose-500/10 rounded-xl flex items-center justify-center text-rose-700 dark:text-rose-500">
+                        <AlertCircle size={20} />
+                     </div>
+                     <div>
+                        <h4 className="text-sm font-black italic uppercase tracking-tight text-slate-900 dark:text-white">Point Minus SFX</h4>
+                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Sound played on wrong hit</p>
+                     </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mb-2 bg-rose-500/10 p-2 rounded-xl border border-rose-500/10">
+                    {AUDIO_PRESETS.miss.map(preset => (
+                      <button
+                        key={preset.url}
+                        onClick={() => {
+                          updateLogic({ customMissSoundUrl: preset.url });
+                          soundService.setCustomMissSound(preset.url).then(() => soundService.playMiss());
+                        }}
+                        className={`px-3 py-1 text-[9px] font-black rounded-lg transition-all border ${logic.customMissSoundUrl === preset.url ? 'bg-rose-600 border-rose-500 text-white' : 'bg-slate-300/50 dark:bg-white/5 border-black/5 dark:border-white/10 text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/10'}`}
+                      >
+                        {preset.name}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input 
+                      value={logic.customMissSoundUrl || ''} 
+                      onChange={(e) => {
+                        const url = e.target.value;
+                        updateLogic({ customMissSoundUrl: url });
+                        if (url.startsWith('https://') || url.startsWith('data:')) {
+                           soundService.setCustomMissSound(url).then(() => soundService.playMiss());
+                        }
+                      }} 
+                      placeholder="SFX URL or upload..." 
+                      className={`${inputStyle} flex-1`} 
+                    />
+                    <button 
+                      onClick={() => missSoundInputRef.current?.click()}
+                      className="p-4 bg-rose-600 text-white rounded-2xl active:scale-95 transition-all shadow-lg shadow-rose-600/20"
+                      title="Upload SFX"
+                    >
+                      <Upload size={20} />
+                    </button>
+                  </div>
+                  <input 
+                    type="file" 
+                    ref={missSoundInputRef} 
+                    className="hidden" 
+                    accept="audio/*" 
+                    onChange={(e) => handleFileSelect(e, async (data) => {
+                      updateLogic({ customMissSoundUrl: data });
+                      await soundService.setCustomMissSound(data);
+                      soundService.playMiss();
+                    })} 
+                  />
+                </div>
+
+                {/* Heart Loss Sound */}
+                <div className="bg-slate-200/50 dark:bg-white/5 p-6 rounded-[2.5rem] border border-black/5 dark:border-white/5 space-y-4">
+                  <div className="flex items-center gap-3 mb-2">
+                     <div className="w-10 h-10 bg-amber-600/10 dark:bg-amber-500/10 rounded-xl flex items-center justify-center text-amber-700 dark:text-amber-500">
+                        <Activity size={20} />
+                     </div>
+                     <div>
+                        <h4 className="text-sm font-black italic uppercase tracking-tight text-slate-900 dark:text-white">Heart Loss SFX</h4>
+                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Sound played on losing life</p>
+                     </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mb-2 bg-amber-500/10 p-2 rounded-xl border border-amber-500/10">
+                    {AUDIO_PRESETS.heartLoss.map(preset => (
+                      <button
+                        key={preset.url}
+                        onClick={() => {
+                          updateLogic({ customHeartLossSoundUrl: preset.url });
+                          soundService.setCustomHeartLossSound(preset.url).then(() => soundService.playHeartLoss());
+                        }}
+                        className={`px-3 py-1 text-[9px] font-black rounded-lg transition-all border ${logic.customHeartLossSoundUrl === preset.url ? 'bg-amber-600 border-amber-500 text-white' : 'bg-slate-300/50 dark:bg-white/5 border-black/5 dark:border-white/10 text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/10'}`}
+                      >
+                        {preset.name}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input 
+                      value={logic.customHeartLossSoundUrl || ''} 
+                      onChange={(e) => {
+                        const url = e.target.value;
+                        updateLogic({ customHeartLossSoundUrl: url });
+                        if (url.startsWith('https://') || url.startsWith('data:')) {
+                           soundService.setCustomHeartLossSound(url).then(() => soundService.playHeartLoss());
+                        }
+                      }} 
+                      placeholder="SFX URL or upload..." 
+                      className={`${inputStyle} flex-1`} 
+                    />
+                    <button 
+                      onClick={() => heartLossSoundInputRef.current?.click()}
+                      className="p-4 bg-amber-600 text-white rounded-2xl active:scale-95 transition-all shadow-lg shadow-amber-600/20"
+                      title="Upload SFX"
+                    >
+                      <Upload size={20} />
+                    </button>
+                  </div>
+                  <input 
+                    type="file" 
+                    ref={heartLossSoundInputRef} 
+                    className="hidden" 
+                    accept="audio/*" 
+                    onChange={(e) => handleFileSelect(e, async (data) => {
+                      updateLogic({ customHeartLossSoundUrl: data });
+                      await soundService.setCustomHeartLossSound(data);
+                      soundService.playHeartLoss();
+                    })} 
                   />
                 </div>
               </div>
@@ -859,12 +1004,12 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                 const isImg = iconData.startsWith('data:image') || iconData.startsWith('http');
                 
                 return (
-                  <div key={type} className="glass p-5 rounded-[2.5rem] flex items-center justify-between shadow-xl border-white/5 group hover:border-blue-500/30 transition-all animate-in fade-in slide-in-from-left-2">
-                    <div className="flex items-center gap-5 flex-1 min-w-0">
-                      <div className="relative">
+                  <div key={type} className="glass p-5 rounded-[2rem] sm:rounded-[2.5rem] flex flex-col sm:flex-row gap-4 sm:gap-0 sm:items-center justify-between shadow-xl border-white/5 group hover:border-blue-500/30 transition-all animate-in fade-in slide-in-from-left-2">
+                    <div className="flex items-center gap-4 sm:gap-5 w-full sm:flex-1 min-w-0">
+                      <div className="relative shrink-0">
                         <button 
                           onClick={() => handleOpenIconPicker(type)} 
-                          className="w-16 h-16 bg-black/40 rounded-[1.5rem] flex items-center justify-center overflow-hidden border-2 border-blue-500/20 hover:border-blue-500 hover:scale-105 transition-all shrink-0 shadow-[0_0_20px_rgba(59,130,246,0.1)] group-hover:shadow-[0_0_30px_rgba(59,130,246,0.2)]"
+                          className="w-14 h-14 sm:w-16 sm:h-16 bg-black/40 rounded-[1.25rem] sm:rounded-[1.5rem] flex items-center justify-center overflow-hidden border-2 border-blue-500/20 hover:border-blue-500 hover:scale-105 transition-all shadow-[0_0_20px_rgba(59,130,246,0.1)] group-hover:shadow-[0_0_30px_rgba(59,130,246,0.2)]"
                         >
                           {isImg ? (
                             <img src={iconData} alt="icon" className="w-full h-full object-contain p-2 animate-in zoom-in-50 duration-500" />
@@ -876,28 +1021,76 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                           <Edit3 size={12} />
                         </div>
                       </div>
-                      <div className="flex-1 min-w-0 space-y-1">
-                        <div className="text-[8px] font-black text-slate-500 uppercase tracking-[0.3em]">Target Identity</div>
+                      <div className="flex-1 min-w-0 flex flex-col justify-center">
+                        <div className="text-[8px] sm:text-[9px] font-black text-slate-500 uppercase tracking-[0.3em] mb-1">Target Identity</div>
                         <input 
                           type="text" 
                           value={type} 
                           onChange={(e) => handleRenameTarget(type, e.target.value)} 
-                          className="bg-transparent border-none text-lg font-black text-slate-900 dark:text-white uppercase outline-none focus:text-blue-500 w-full truncate italic tracking-tighter" 
+                          className="bg-black/20 dark:bg-black/40 border border-slate-200/20 dark:border-white/10 rounded-xl px-3 py-2 text-base sm:text-lg font-black text-slate-900 dark:text-white uppercase outline-none focus:text-blue-500 w-full truncate italic tracking-tighter" 
                         />
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <div className="flex flex-col items-center">
-                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.3em] mb-1">PTS</span>
+                    <div className="flex items-center gap-2 sm:gap-3 justify-end w-full sm:w-auto mt-2 sm:mt-0 flex-wrap">
+                      <div className="flex flex-col gap-2 items-start py-1">
+                        <label className="flex items-center gap-2 cursor-pointer group">
+                           <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-colors ${
+                              (logic.lifeLossTargetsOnWhack !== undefined ? logic.lifeLossTargetsOnWhack.includes(type) : (type === 'hazard' || logic.targetScores[type] <= -15)) 
+                              ? 'bg-rose-500 border-rose-500' : 'border-slate-300 dark:border-white/20 bg-transparent'
+                           }`}>
+                             {(logic.lifeLossTargetsOnWhack !== undefined ? logic.lifeLossTargetsOnWhack.includes(type) : (type === 'hazard' || logic.targetScores[type] <= -15)) && <X size={10} className="text-white" />}
+                           </div>
+                           <input 
+                              type="checkbox" 
+                              className="hidden"
+                              checked={logic.lifeLossTargetsOnWhack !== undefined ? logic.lifeLossTargetsOnWhack.includes(type) : (type === 'hazard' || logic.targetScores[type] <= -15)}
+                              onChange={(e) => {
+                                 const isChecked = e.target.checked;
+                                 let currentList = logic.lifeLossTargetsOnWhack;
+                                 if (!currentList) {
+                                     currentList = Object.keys(logic.targetWeights).filter(k => k === 'hazard' || logic.targetScores[k] <= -15);
+                                 }
+                                 if (isChecked) updateLogic({ lifeLossTargetsOnWhack: Array.from(new Set([...currentList, type])) });
+                                 else updateLogic({ lifeLossTargetsOnWhack: currentList.filter(t => t !== type) });
+                              }}
+                           />
+                           <span className="text-[9px] font-black text-rose-500 uppercase tracking-widest group-hover:text-rose-400 transition-colors">Fatal Hit</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer group">
+                           <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-colors ${
+                              (logic.lifeLossTargetsOnMiss !== undefined ? logic.lifeLossTargetsOnMiss.includes(type) : (logic.gameType === 'Focus' && (type === 'dog' || type === 'rat'))) 
+                              ? 'bg-amber-500 border-amber-500' : 'border-slate-300 dark:border-white/20 bg-transparent'
+                           }`}>
+                             {(logic.lifeLossTargetsOnMiss !== undefined ? logic.lifeLossTargetsOnMiss.includes(type) : (logic.gameType === 'Focus' && (type === 'dog' || type === 'rat'))) && <X size={10} className="text-white" />}
+                           </div>
+                           <input 
+                              type="checkbox" 
+                              className="hidden"
+                              checked={logic.lifeLossTargetsOnMiss !== undefined ? logic.lifeLossTargetsOnMiss.includes(type) : (logic.gameType === 'Focus' && (type === 'dog' || type === 'rat'))}
+                              onChange={(e) => {
+                                 const isChecked = e.target.checked;
+                                 let currentList = logic.lifeLossTargetsOnMiss;
+                                 if (!currentList) {
+                                     currentList = logic.gameType === 'Focus' ? Object.keys(logic.targetWeights).filter(k => k === 'dog' || k === 'rat') : [];
+                                 }
+                                 if (isChecked) updateLogic({ lifeLossTargetsOnMiss: Array.from(new Set([...currentList, type])) });
+                                 else updateLogic({ lifeLossTargetsOnMiss: currentList.filter(t => t !== type) });
+                              }}
+                           />
+                           <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest group-hover:text-amber-400 transition-colors">Fatal Miss</span>
+                        </label>
+                      </div>
+                      <div className="flex flex-col items-center flex-1 sm:flex-none ml-2">
+                        <span className="text-[8px] sm:text-[9px] font-black text-slate-500 uppercase tracking-[0.3em] mb-1">PTS</span>
                         <input 
                           type="number" 
                           value={logic.targetScores[type]} 
                           onChange={(e) => handleScoreChange(type, parseInt(e.target.value) || 0)} 
-                          className="w-20 bg-surface dark:bg-slate-900 border-2 border-slate-200 dark:border-white/10 rounded-2xl text-center text-blue-600 dark:text-blue-400 font-black py-3 text-lg outline-none tabular-nums shadow-lg focus:ring-4 focus:ring-blue-500/30 transition-all appearance-none" 
+                          className="w-full sm:w-20 bg-surface dark:bg-slate-900 border-2 border-slate-200 dark:border-white/10 rounded-xl sm:rounded-2xl text-center text-blue-600 dark:text-blue-400 font-black py-2 sm:py-3 text-base sm:text-lg outline-none tabular-nums shadow-lg focus:ring-4 focus:ring-blue-500/30 transition-all appearance-none" 
                         />
                       </div>
                       {Object.keys(logic.targetWeights).length > 1 && (
-                        <button onClick={() => handleRemoveTarget(type)} className="p-2 text-rose-500/50 hover:text-rose-500 active:scale-90 transition-all"><Trash2 size={24} /></button>
+                        <button onClick={() => handleRemoveTarget(type)} className="p-3 bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white rounded-xl sm:rounded-2xl active:scale-95 transition-all"><Trash2 size={20} /></button>
                       )}
                     </div>
                   </div>
@@ -925,51 +1118,49 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
                         </div>
                       )}
 
-                      <section className="bg-white/5 p-5 rounded-[2rem] border border-white/5">
-                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-3 block px-1">Selected Icon</label>
-                        <div className="flex items-center gap-4">
-                          <div className="w-20 h-20 bg-black/40 rounded-3xl flex items-center justify-center text-4xl border-2 border-blue-500/50 shadow-[0_0_20px_rgba(59,130,246,0.2)] overflow-hidden">
+                      <section className="bg-black/20 p-6 rounded-[2.5rem] border border-white/5 shadow-inner">
+                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 block px-1 text-center">Selected Icon</label>
+                        <div className="flex flex-col items-center gap-6">
+                          <div className="w-32 h-32 bg-gradient-to-br from-black/60 to-black/20 rounded-[2.5rem] flex items-center justify-center text-6xl border-2 border-blue-500/40 shadow-2xl relative group overflow-hidden shrink-0 animate-in zoom-in-75 duration-300">
                             {stagedIcon ? (
                               stagedIcon.startsWith('data') || stagedIcon.startsWith('http') ? (
-                                <img src={stagedIcon} className="w-full h-full object-contain p-2" />
-                              ) : stagedIcon
+                                <img src={stagedIcon} className="w-full h-full object-contain p-4" />
+                              ) : <span className="drop-shadow-2xl">{stagedIcon}</span>
                             ) : (
                               <span className="opacity-30">❓</span>
                             )}
+                            <div className="absolute inset-0 bg-blue-500/10 opacity-0 group-hover:opacity-100 transition-opacity" />
                           </div>
-                          <div className="flex-1 space-y-3">
-                            <div className="flex items-center gap-3">
-                              <div className="flex-1 flex items-center gap-2 bg-white/5 rounded-2xl px-4 py-2 border border-white/10">
-                                <TypeIcon size={14} className="text-blue-500" />
+                          <div className="w-full space-y-4">
+                            <div className="relative">
+                              <div className="flex items-center gap-3 bg-white/5 focus-within:bg-white/10 transition-colors rounded-2xl px-5 py-4 border border-white/10 focus-within:border-blue-500/50 shadow-lg">
+                                <TypeIcon size={18} className="text-blue-500" />
                                 <input 
                                   type="text" 
-                                  placeholder="Type Emoji..." 
+                                  placeholder="Type Icon/Emoji..." 
                                   value={(!stagedIcon.startsWith('data') && !stagedIcon.startsWith('http')) ? stagedIcon : ''}
-                                  className="flex-1 bg-transparent border-none text-sm text-slate-900 dark:text-white font-bold outline-none"
-                                  maxLength={2}
+                                  className="flex-1 bg-transparent border-none text-lg text-slate-900 dark:text-white font-black outline-none placeholder:text-slate-600 italic tracking-tight"
+                                  maxLength={8}
                                   onChange={(e) => {
                                     setPickerError(null);
-                                    // Don't auto-fill question mark here so user can clear and type naturally
                                     setStagedIcon(e.target.value);
                                   }}
                                 />
                               </div>
-                              {(stagedIcon.startsWith('data') || stagedIcon.startsWith('http')) && (
-                                <div className="w-10 h-10 bg-blue-500/10 rounded-xl border border-blue-500/30 overflow-hidden flex items-center justify-center shrink-0 animate-in zoom-in-50">
-                                  <img src={stagedIcon} className="w-full h-full object-contain p-1" />
-                                </div>
-                              )}
                             </div>
                             <button 
-                              onClick={() => fileInputRef.current?.click()} 
-                              className="w-full flex items-center justify-center gap-2 py-3 bg-blue-500/10 dark:bg-blue-600/20 text-blue-600 dark:text-blue-400 rounded-2xl text-[9px] font-black uppercase tracking-widest border border-blue-500/20 dark:border-blue-500/30 hover:bg-blue-600 hover:text-white transition-all"
+                              onClick={() => {
+                                setPickerError(null);
+                                fileInputRef.current?.click();
+                              }} 
+                              className="w-full flex items-center justify-center gap-3 py-5 bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.3em] shadow-xl hover:shadow-blue-600/20 active:scale-95 transition-all"
                             >
-                              <Upload size={14} /> UPLOAD IMAGE
+                              <Upload size={18} /> UPLOAD IMAGE
                             </button>
                           </div>
                         </div>
                       </section>
-
+                      
                       <section>
                         <label className="text-[9px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3 block px-1">Presets</label>
                         <div className="grid grid-cols-4 sm:grid-cols-5 gap-3">
@@ -1224,42 +1415,47 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
           </div>
         </div>
       )}
-      <header className="fixed top-6 inset-x-4 h-24 flex items-center z-[110] pointer-events-none">
-        <div className="glass w-full h-full rounded-[3rem] px-8 flex items-center justify-between shadow-[0_32px_64px_-16px_rgba(0,0,0,0.3)] pointer-events-auto border-white/5 backdrop-blur-3xl">
-          <button onClick={onCancel} className="p-4 hover:bg-black/5 dark:hover:bg-white/5 rounded-2xl transition-all active:scale-90"><ChevronLeft size={28} /></button>
+      <header className={`fixed top-2 sm:top-6 inset-x-2 sm:inset-x-4 h-16 sm:h-20 flex items-center z-[110] pointer-events-none transition-all duration-300 ${showUI ? 'translate-y-0 opacity-100' : '-translate-y-[150%] opacity-0'}`}>
+        <div className="glass w-full h-full rounded-3xl sm:rounded-[3rem] px-4 sm:px-8 flex items-center justify-between shadow-[0_32px_64px_-16px_rgba(0,0,0,0.3)] pointer-events-auto border-white/5 backdrop-blur-3xl">
+          <button onClick={onCancel} className="p-2 sm:p-4 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl sm:rounded-2xl transition-all active:scale-90"><ChevronLeft className="w-6 h-6 sm:w-7 sm:h-7" /></button>
           <div className="flex flex-col items-center">
-            <h2 className="text-3xl font-black vibrant-text uppercase tracking-tighter italic leading-none">Level Builder</h2>
-            <div className="flex items-center gap-2 mt-1.5 opacity-60">
-               <Cpu size={12} className="text-blue-500 animate-pulse" />
-               <span className="text-[8px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-[0.3em]">v1.2</span>
+            <h2 className="text-xl sm:text-2xl font-black vibrant-text uppercase tracking-tighter italic leading-none">Level Builder</h2>
+            <div className="flex items-center gap-1.5 sm:gap-2 mt-1 sm:mt-1.5 opacity-60">
+               <Cpu size={10} className="text-blue-500 animate-pulse sm:w-3 sm:h-3" />
+               <button 
+                 onClick={() => setShowTutorial(true)}
+                 className="flex items-center gap-1 text-[7px] sm:text-[8px] font-black text-blue-500 uppercase tracking-[0.3em] hover:text-blue-400 transition-colors"
+                >
+                 <Info size={10} /> GUIDE
+               </button>
             </div>
           </div>
-          <div className="w-14" /> {/* Spacer */}
+          <div className="w-10 sm:w-14" /> {/* Spacer */}
         </div>
       </header>
-      <div className="flex-1 overflow-y-auto px-4 pt-36 pb-36 no-scrollbar">
+      <div onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 pt-24 pb-28 sm:pt-36 sm:pb-36 no-scrollbar">
         <div className="max-w-xl mx-auto">{renderTabContent()}</div>
       </div>
-      <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[110] px-4 w-full max-w-lg">
-        <div className="glass rounded-[2.5rem] border border-white/10 p-2 shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)] flex items-center justify-between gap-1 relative overflow-hidden backdrop-blur-3xl">
+      <nav className={`fixed bottom-2 sm:bottom-8 left-1/2 -translate-x-1/2 z-[110] px-2 sm:px-4 w-full max-w-lg transition-all duration-300 ${showUI ? 'translate-y-0 opacity-100' : 'translate-y-[150%] opacity-0'}`}>
+        <div className="glass rounded-[2rem] sm:rounded-[2.5rem] border border-white/10 p-1 sm:p-2 shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)] flex items-center overflow-x-auto no-scrollbar gap-1 relative backdrop-blur-3xl">
           {[
-            { id: 'start', label: 'Setup', icon: <LayoutGrid size={22} /> },
-            { id: 'presets', label: 'Presets', icon: <Zap size={22} /> },
-            { id: 'identity', label: 'Info', icon: <Info size={22} /> },
-            { id: 'timing', label: 'Time', icon: <Clock size={22} /> },
-            { id: 'visuals', label: 'Look', icon: <Palette size={22} /> },
-            { id: 'audio', label: 'Audio', icon: <Activity size={22} /> },
-            { id: 'targets', label: 'Targets', icon: <Target size={22} /> },
-            { id: 'balancing', label: 'Rates', icon: <Sliders size={22} /> },
-            { id: 'review', label: 'Publish', icon: <PlayCircle size={22} /> }
+            { id: 'start', label: 'Setup', icon: <LayoutGrid className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'presets', label: 'Presets', icon: <Zap className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'identity', label: 'Info', icon: <Info className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'timing', label: 'Time', icon: <Clock className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'visuals', label: 'Look', icon: <Palette className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'audio', label: 'Audio', icon: <Activity className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'targets', label: 'Targets', icon: <Target className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'balancing', label: 'Rates', icon: <Sliders className="w-5 h-5 sm:w-6 sm:h-6" /> },
+            { id: 'review', label: 'Publish', icon: <PlayCircle className="w-5 h-5 sm:w-6 sm:h-6" /> }
           ].map(tab => (
             <button 
               key={tab.id} 
               onClick={() => setActiveTab(tab.id as any)} 
-              className={`relative flex-1 flex flex-col items-center justify-center py-3.5 rounded-2xl transition-all duration-300 active:scale-90 ${activeTab === tab.id ? 'bg-gradient-to-br from-fuchsia-600 via-pink-600 to-purple-700 text-white shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`relative flex-1 min-w-[50px] sm:min-w-0 flex flex-col items-center justify-center py-2 sm:py-3.5 rounded-[1.25rem] sm:rounded-2xl transition-all duration-300 active:scale-90 ${activeTab === tab.id ? 'bg-gradient-to-br from-fuchsia-600 via-pink-600 to-purple-700 text-white shadow-xl' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-300'}`}
             >
-              <div className={`${activeTab === tab.id ? 'scale-110 translate-y-[-2px]' : 'scale-100'} transition-transform duration-300`}>{tab.icon}</div>
-              <span className={`text-[7px] font-black uppercase tracking-widest mt-1.5 ${activeTab === tab.id ? 'block' : 'hidden'}`}>{tab.label}</span>
+              <div className={`${activeTab === tab.id ? 'scale-105 sm:scale-110 translate-y-[-1px] sm:translate-y-[-2px]' : 'scale-100'} transition-transform duration-300`}>{tab.icon}</div>
+              <span className={`text-[6px] sm:text-[7px] font-black uppercase tracking-widest mt-1 sm:mt-1.5 ${activeTab === tab.id ? 'block' : 'hidden'}`}>{tab.label}</span>
             </button>
           ))}
         </div>
@@ -1316,6 +1512,90 @@ const LevelEditor: React.FC<LevelEditorProps> = ({ initialLevel, onSave, onCance
             </div>
           </div>
           <p className="mt-6 text-xs font-black uppercase tracking-[0.4em] text-blue-500 animate-pulse">Processing Neural Data...</p>
+        </div>
+      )}
+
+      {/* Tutorial Modal */}
+      {showTutorial && (
+        <div className="fixed inset-0 z-[250] flex items-center justify-center p-4 animate-in fade-in zoom-in-95 duration-300">
+          <div className="absolute inset-0 bg-slate-950/95 backdrop-blur-2xl" onClick={() => setShowTutorial(false)} />
+          <div className="relative glass w-full max-w-lg max-h-[85dvh] rounded-[3rem] p-8 shadow-2xl border-white/10 overflow-hidden flex flex-col">
+            <header className="flex justify-between items-center mb-8 shrink-0">
+              <div className="space-y-1">
+                <h2 className="text-2xl font-black italic tracking-tighter uppercase vibrant-text">Neural Constructor Guide</h2>
+                <p className="text-slate-500 font-black text-[10px] uppercase tracking-[0.3em]">Level Design Protocol</p>
+              </div>
+              <button onClick={() => setShowTutorial(false)} className="p-2 text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors">
+                <X size={24} />
+              </button>
+            </header>
+
+            <div className="flex-1 overflow-y-auto no-scrollbar space-y-8 pr-2 pb-6 text-slate-300">
+              {[
+                { 
+                  title: '1. Setup & Modes', 
+                  desc: 'Choose "Manual" for full control or "Template" to start from an existing blueprint. Templates are great for rapid iteration.',
+                  icon: <LayoutGrid className="text-blue-400" /> 
+                },
+                { 
+                  title: '2. Presets', 
+                  desc: 'Select from tuned game logic patterns (Standard, Catch, Focus, Insane) to instantly set spawn rates and scoring rules.',
+                  icon: <Zap className="text-yellow-400" /> 
+                },
+                { 
+                  title: '3. Identity', 
+                  desc: 'Every arena needs a unique callsing (name). This is where you set the mission title and its core difficulty logic.',
+                  icon: <Info className="text-fuchsia-400" /> 
+                },
+                { 
+                  title: '4. Timing', 
+                  desc: 'Precision control over spawn intervals (frequency), stay time (how long targets remain), and total mission duration.',
+                  icon: <Clock className="text-emerald-400" /> 
+                },
+                { 
+                  title: '5. Visuals & Themes', 
+                  desc: 'Customize the arena environment. Set background styles (Grid, Matrix, Particles, Blobs, Horror) and colors.',
+                  icon: <Palette className="text-purple-400" /> 
+                },
+                { 
+                  title: '6. Audio Interface', 
+                  desc: 'Configure background music and localized sound effects for hits, misses, and heart loss to enhance immersion.',
+                  icon: <Activity className="text-sky-400" /> 
+                },
+                { 
+                  title: '7. Target Configuration', 
+                  desc: 'The heart of your level. Add specific target types, assign emojis or custom images, and set their individual point values.',
+                  icon: <Target className="text-rose-400" /> 
+                },
+                { 
+                  title: '8. Neural Balancing', 
+                  desc: 'Fine-tune spawn probabilities and speed multipliers for each target. Use this to create complex patterns or traps.',
+                  icon: <Sliders className="text-indigo-400" /> 
+                },
+                { 
+                  title: '9. Publish & Test', 
+                  desc: 'Use the interactive preview to test your arena before final deployment. Once satisfied, publish to the network.',
+                  icon: <PlayCircle className="text-amber-400" /> 
+                }
+              ].map((step, i) => (
+                <div key={i} className="flex gap-5 group items-start">
+                  <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center shrink-0 border border-white/5 group-hover:bg-white/10 transition-colors">
+                    {step.icon}
+                  </div>
+                  <div className="space-y-1.5">
+                    <h4 className="font-black italic text-slate-100 uppercase tracking-tight">{step.title}</h4>
+                    <p className="text-xs leading-relaxed opacity-60 font-medium">{step.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-6 border-t border-white/5 shrink-0">
+               <Button onClick={() => setShowTutorial(false)} variant="primary" className="w-full py-5 rounded-2xl font-black italic">
+                  I UNDERSTAND THE PROTOCOLS
+               </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

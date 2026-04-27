@@ -19,7 +19,7 @@ const Button: React.FC<ButtonProps> = ({
   disabled,
   ...props 
 }) => {
-  const baseStyles = "relative inline-flex items-center justify-center font-black transition-all duration-300 rounded-xl active:scale-[0.96] group select-none touch-manipulation overflow-hidden whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed uppercase italic tracking-tighter";
+  const baseStyles = "relative inline-flex items-center justify-center font-black transition-all duration-300 active:scale-[0.96] group select-none touch-manipulation overflow-hidden whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed uppercase italic tracking-tighter";
   
   const variants = {
     primary: `
@@ -66,7 +66,6 @@ const Button: React.FC<ButtonProps> = ({
       disabled={disabled || loading}
       {...props}
     >
-      <span className="absolute inset-x-0 top-0 h-[1px] bg-white/20 rounded-t-xl pointer-events-none" />
       <span className="relative z-10 flex items-center justify-center gap-2 drop-shadow-sm">
         {loading && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
         {children}

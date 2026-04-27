@@ -2,8 +2,9 @@
 import React, { useState } from 'react';
 import { UserStats, GameLevel } from '../types';
 import Button from './Button';
-import { Settings, LogOut, Award, Star, Clock, Hammer, ShieldCheck, Play, Mail, Lock, User as UserIcon, LogIn, Chrome, Share2, Edit3, ChevronLeft, AlertCircle, LayoutGrid, ExternalLink } from 'lucide-react';
-import { getSupabase, logSignupToSheets } from '../services/supabaseClient';
+import { Settings, LogOut, Award, Star, Clock, Hammer, ShieldCheck, Play, Lock, User as UserIcon, LogIn, Chrome, Share2, Edit3, ChevronLeft, LayoutGrid, ExternalLink } from 'lucide-react';
+import { auth, googleProvider } from '../firebase';
+import { signInWithPopup } from 'firebase/auth';
 
 interface ProfilePageProps {
   stats: UserStats;
@@ -18,10 +19,6 @@ interface ProfilePageProps {
 
 const ProfilePage: React.FC<ProfilePageProps> = ({ stats, myLevels, onPlayLevel, onLogout, onOpenSettings, onEditLevel, isAuthenticated, onAuthSuccess }) => {
   const [showAuth, setShowAuth] = useState(false);
-  const [isLoginView, setIsLoginView] = useState(true);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -50,85 +47,15 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ stats, myLevels, onPlayLevel,
     setLoading(true);
     setError(null);
     try {
-      let supabase;
-      try {
-        supabase = getSupabase();
-      } catch (err: any) {
-        throw new Error("Google Sign-In is currently unavailable. Supabase configuration is missing.");
-      }
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-        }
-      });
-      if (error) throw error;
-    } catch (err: any) {
-      setError(err.message);
-      setLoading(false);
-    }
-  };
-
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      let supabase;
-      try {
-        supabase = getSupabase();
-      } catch (err: any) {
-        throw new Error("Cloud sync is currently unavailable. Please contact the administrator to configure Supabase.");
-      }
-
-      if (isLoginView) {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-      } else {
-        const { data, error } = await supabase.auth.signUp({ 
-          email, 
-          password,
-          options: {
-            data: { username: username || email.split('@')[0] }
-          }
-        });
-        
-        if (error) {
-          if (error.message.includes("rate limit")) {
-            throw new Error("Server Busy: Too many requests. Please try again in 1 hour or use Google Sign-In.");
-          }
-          throw error;
-        }
-
-        if (data.user) {
-          await logSignupToSheets(email, username || email.split('@')[0]);
-          setSuccess("Account created! Check your email to verify.");
-          // Clear form
-          setEmail('');
-          setPassword('');
-          setUsername('');
-          return;
-        }
-      }
+      await signInWithPopup(auth, googleProvider);
       onAuthSuccess();
     } catch (err: any) {
       setError(err.message);
-    } finally {
       setLoading(false);
     }
   };
 
   if (showAuth && !isAuthenticated) {
-    let isSupabaseConfigured = true;
-    try {
-      getSupabase();
-    } catch (e) {
-      isSupabaseConfigured = false;
-    }
-
     return (
       <div className="w-full max-w-md mx-auto p-8 space-y-8 animate-in fade-in slide-in-from-bottom-10 duration-700">
         <div className="flex justify-start">
@@ -136,112 +63,55 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ stats, myLevels, onPlayLevel,
             <ChevronLeft size={14} /> Back to Profile
           </button>
         </div>
-        <div className="text-center space-y-2">
-          <div className="w-20 h-20 bg-blue-500/10 rounded-[2rem] flex items-center justify-center mx-auto mb-4">
+        <div className="text-center space-y-4">
+          <div className="w-24 h-24 bg-blue-500/10 rounded-[2.5rem] flex items-center justify-center mx-auto mb-2 border border-blue-500/20">
             <LogIn size={40} className="text-blue-500" />
           </div>
-          <h1 className="text-4xl font-black italic tracking-tighter uppercase text-slate-900 dark:text-white">Sign In</h1>
-          <p className="text-slate-500 font-bold text-xs uppercase tracking-widest">Connect to save your progress</p>
+          <div className="space-y-1">
+            <h1 className="text-4xl font-black italic tracking-tighter uppercase text-slate-900 dark:text-white">Login Here</h1>
+            <p className="text-slate-500 font-bold text-[10px] uppercase tracking-[0.2em]">Access your profile on any device</p>
+          </div>
         </div>
 
-        {!isSupabaseConfigured ? (
-          <div className="glass p-8 rounded-[2.5rem] border-rose-500/20 space-y-6 text-center">
-            <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center mx-auto">
-              <AlertCircle size={32} className="text-rose-500" />
-            </div>
-            <div className="space-y-2">
-              <h3 className="text-sm font-black uppercase tracking-widest text-rose-500">Cloud Sync Unavailable</h3>
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-relaxed">
-                Supabase environment variables are missing. You can still play and create levels locally, but cloud synchronization is disabled.
-              </p>
-            </div>
-            <Button onClick={() => setShowAuth(false)} variant="primary" className="w-full py-4 rounded-2xl text-[10px] uppercase tracking-widest">
-              CONTINUE IN LOCAL MODE
-            </Button>
+        <div className="glass p-8 rounded-[3rem] border-black/5 dark:border-white/10 space-y-6">
+          <div className="text-center space-y-4 px-2">
+            <p className="text-slate-500 dark:text-slate-400 text-xs font-bold leading-relaxed">
+              Logging in allows you to save your high scores, arena creations, and rank across all devices.
+            </p>
           </div>
-        ) : (
-          <form onSubmit={handleAuth} className="glass p-8 rounded-[2.5rem] border-black/5 dark:border-white/10 space-y-4">
-            {!isLoginView && (
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 px-2">Username</label>
-                <div className="relative">
-                  <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input 
-                    type="text" 
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="Your Name"
-                    className="w-full bg-black/5 dark:bg-white/5 border-none rounded-2xl py-4 pl-12 pr-4 font-bold focus:ring-2 ring-blue-500/50 transition-all"
-                    required={!isLoginView}
-                  />
-                </div>
-              </div>
-            )}
 
-            <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 px-2">Email Address</label>
-              <div className="relative">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                <input 
-                  type="email" 
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@email.com"
-                  className="w-full bg-black/5 dark:bg-white/5 border-none rounded-2xl py-4 pl-12 pr-4 font-bold focus:ring-2 ring-blue-500/50 transition-all"
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 px-2">Password</label>
-              <div className="relative">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                <input 
-                  type="password" 
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full bg-black/5 dark:bg-white/5 border-none rounded-2xl py-4 pl-12 pr-4 font-bold focus:ring-2 ring-blue-500/50 transition-all"
-                  required
-                />
-              </div>
-            </div>
-
-            {error && <p className="text-rose-500 text-[10px] font-black uppercase text-center bg-rose-500/10 py-3 rounded-xl border border-rose-500/20">{error}</p>}
-            {success && <p className="text-emerald-500 text-[10px] font-black uppercase text-center bg-emerald-500/10 py-3 rounded-xl border border-emerald-500/20">{success}</p>}
-
-            <Button 
-              type="submit" 
-              className="w-full py-4 rounded-2xl font-black uppercase tracking-widest"
-              loading={loading}
-            >
-              {isLoginView ? 'Login' : 'Sign Up'}
-            </Button>
-
-            <div className="relative py-2">
-              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200 dark:border-white/10"></div></div>
-              <div className="relative flex justify-center text-[8px] font-black uppercase tracking-[0.3em]"><span className="bg-app-bg px-4 text-slate-400">Secure Protocol</span></div>
-            </div>
+          <div className="space-y-4">
+             {error && (
+               <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-4 text-rose-500 text-[10px] font-black uppercase tracking-widest text-center">
+                 {error}
+               </div>
+             )}
 
             <button 
               type="button"
               onClick={handleGoogleLogin}
               disabled={loading}
-              className="w-full py-4 rounded-2xl bg-surface dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-center gap-3 text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 dark:hover:bg-white/10 transition-all active:scale-95 disabled:opacity-50"
+              className="w-full py-6 rounded-full bg-blue-600 text-white flex items-center justify-center gap-3 text-xs font-black uppercase tracking-[0.1em] hover:bg-blue-700 transition-all active:scale-95 disabled:opacity-50 shadow-xl shadow-blue-600/20 border border-blue-500/30"
             >
-              <Chrome size={18} className="text-blue-500" /> Continue with Google
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                <>
+                  <Chrome size={20} className="text-white" /> Continue with Google
+                </>
+              )}
             </button>
+          </div>
 
-            <button 
-              type="button"
-              onClick={() => setIsLoginView(!isLoginView)}
-              className="w-full text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-blue-500 transition-colors"
-            >
-              {isLoginView ? "Don't have an account? Sign Up" : "Already have an account? Login"}
-            </button>
-          </form>
-        )}
+          <div className="relative pt-4">
+            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200 dark:border-white/5"></div></div>
+            <div className="relative flex justify-center text-[7px] font-black uppercase tracking-[0.4em]"><span className="bg-app-bg px-4 text-slate-500">Authorized Access Only</span></div>
+          </div>
+        </div>
+        
+        <p className="text-center text-[8px] font-black uppercase tracking-[0.2em] text-slate-600">
+          By logging in, you agree to our Terms and Privacy Policy.
+        </p>
       </div>
     );
   }
@@ -306,7 +176,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ stats, myLevels, onPlayLevel,
                 onClick={() => setShowAuth(true)}
                 className="px-6 py-3 bg-blue-600 text-white rounded-2xl flex items-center gap-2 text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all active:scale-95 shadow-lg shadow-blue-600/20 relative z-20"
               >
-                <LogIn size={16} /> SYNC ACCOUNT
+                <LogIn size={16} /> LOGIN HERE
               </button>
             )}
             <div className="glass px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 text-slate-700 dark:text-slate-300 border-black/5 dark:border-white/10">
@@ -402,19 +272,18 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ stats, myLevels, onPlayLevel,
 
       {/* Floating App Hub Button */}
       <a 
-        href="https://nexus-appshub.netlify.app/" 
+        href="https://xubilas-appshub.vercel.app/" 
         target="_blank" 
         rel="noopener noreferrer"
-        className="fixed bottom-28 right-6 sm:right-12 z-[90] group flex items-center gap-3 px-6 py-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-full shadow-2xl shadow-blue-600/40 hover:scale-105 active:scale-95 transition-all duration-300 border border-white/20"
+        className="fixed bottom-28 right-6 sm:right-12 z-[90] group flex items-center gap-3 px-6 py-4 bg-slate-900/10 dark:bg-white/5 backdrop-blur-md text-slate-900 dark:text-white rounded-full shadow-2xl shadow-blue-600/10 hover:scale-105 active:scale-95 transition-all duration-300 border border-slate-900/10 dark:border-white/20"
       >
         <div className="relative">
-          <LayoutGrid size={22} className="group-hover:rotate-12 transition-transform" />
-          <div className="absolute -top-1 -right-1 w-3 h-3 bg-rose-500 rounded-full border-2 border-white animate-pulse" />
+          <LayoutGrid size={22} className="group-hover:rotate-12 transition-transform text-blue-600 dark:text-blue-400" />
+          <div className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-slate-100 dark:border-slate-900 animate-pulse" />
         </div>
         <div className="flex flex-col items-start leading-none pr-1">
-          <span className="text-[9px] font-black uppercase tracking-widest opacity-80">Discover</span>
           <span className="text-sm font-black uppercase tracking-tighter italic flex items-center gap-1">
-            NEXUS HUB <ExternalLink size={12} className="opacity-50" />
+            XUBILAS HUB <ExternalLink size={12} className="opacity-50" />
           </span>
         </div>
       </a>

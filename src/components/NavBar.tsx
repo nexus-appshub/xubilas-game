@@ -1,6 +1,6 @@
 
-import React from 'react';
-import { Home, Compass, Hammer, User, Sun, Moon } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Home, Compass, Hammer, User, Sun, Moon, Gamepad2 } from 'lucide-react';
 import { AppView } from '../types';
 import { soundService } from '../services/soundService';
 
@@ -12,8 +12,38 @@ interface NavBarProps {
 }
 
 const NavBar: React.FC<NavBarProps> = ({ currentView, onNavigate, theme, toggleTheme }) => {
+  const [isVisible, setIsVisible] = useState(true);
+  const [lastScrollY, setLastScrollY] = useState(0);
+
+  useEffect(() => {
+    const scrollContainer = document.querySelector('main');
+    if (!scrollContainer) return;
+
+    const handleScroll = () => {
+      const currentScrollY = scrollContainer.scrollTop;
+      
+      // Always show at the top of the page
+      if (currentScrollY < 50) {
+        setIsVisible(true);
+      } else {
+        // Show when scrolling up, hide when scrolling down
+        if (currentScrollY > lastScrollY && isVisible) {
+          setIsVisible(false);
+        } else if (currentScrollY < lastScrollY && !isVisible) {
+          setIsVisible(true);
+        }
+      }
+      
+      setLastScrollY(currentScrollY);
+    };
+
+    scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
+    return () => scrollContainer.removeEventListener('scroll', handleScroll);
+  }, [lastScrollY, isVisible]);
+
   const tabs = [
     { id: 'home', icon: <Home size={18} />, label: 'Home' },
+    { id: 'new_games', icon: <Gamepad2 size={18} />, label: 'New Game' },
     { id: 'hub', icon: <Compass size={18} />, label: 'Browse' },
     { id: 'editor', icon: <Hammer size={18} />, label: 'Create' },
     { id: 'profile', icon: <User size={18} />, label: 'Profile' }
@@ -31,7 +61,7 @@ const NavBar: React.FC<NavBarProps> = ({ currentView, onNavigate, theme, toggleT
   };
 
   return (
-    <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] px-4 w-full max-w-md sm:max-w-lg">
+    <nav className={`fixed left-1/2 -translate-x-1/2 z-[80] px-4 w-full max-w-md sm:max-w-lg transition-all duration-500 ease-in-out ${isVisible ? 'bottom-6' : '-bottom-24 opacity-0'}`}>
       <div className="glass rounded-[2rem] p-2 shadow-2xl flex items-center justify-between gap-2 relative overflow-hidden border-slate-200 dark:border-white/10 backdrop-blur-2xl">
         {tabs.map((tab) => {
           const isActive = currentView === tab.id;

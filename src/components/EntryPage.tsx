@@ -4,13 +4,15 @@ import { Smartphone, Download, Zap, Shield, Cpu, Activity, X } from 'lucide-reac
 
 interface EntryPageProps {
   onEnter: () => void;
+  onPlayFeatured: () => void;
 }
 
-const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
+const EntryPage: React.FC<EntryPageProps> = ({ onEnter, onPlayFeatured }) => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState(0);
   const [showInstallPopup, setShowInstallPopup] = useState(false);
+  const [syncAction, setSyncAction] = useState<'home' | 'play'>('home');
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
@@ -29,7 +31,8 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
     };
   }, []);
 
-  const handleSync = () => {
+  const handleSync = (action: 'home' | 'play') => {
+    setSyncAction(action);
     setIsSyncing(true);
     let progress = 0;
     const interval = setInterval(() => {
@@ -37,7 +40,18 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
       if (progress >= 100) {
         progress = 100;
         clearInterval(interval);
-        setTimeout(onEnter, 500);
+        setTimeout(() => {
+          if (action === 'home') {
+            onEnter();
+          } else {
+            onPlayFeatured();
+          }
+          // Reset for potential back navigation
+          setTimeout(() => {
+            setIsSyncing(false);
+            setSyncProgress(0);
+          }, 1000);
+        }, 500);
       }
       setSyncProgress(progress);
     }, 150);
@@ -59,7 +73,7 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
   };
 
   return (
-    <div className="relative h-full w-full flex flex-col items-center justify-center bg-app-bg overflow-hidden p-8 transition-colors duration-500">
+    <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-center bg-app-bg overflow-x-hidden p-4 sm:p-8 transition-colors duration-500">
       {/* Cinematic Background Elements */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-fuchsia-600/10 dark:bg-fuchsia-600/20 blur-[120px] rounded-full animate-float" />
@@ -82,11 +96,12 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <h1 className="text-5xl sm:text-8xl font-black italic tracking-tighter uppercase leading-none drop-shadow-2xl vibrant-text">
-              XUBILAS<span className="gradient-text">MIND WHACK</span>
+          <div className="space-y-2 px-2 w-full">
+            <h1 className="flex flex-col items-center justify-center text-4xl sm:text-6xl md:text-8xl font-black italic tracking-tighter uppercase leading-[0.85] drop-shadow-2xl vibrant-text">
+              <span className="mb-2 sm:mb-0">XUBILAS</span>
+              <span className="gradient-text">MIND WHACK</span>
             </h1>
-            <div className="flex items-center justify-center gap-3 text-slate-500 dark:text-slate-400 text-[10px] sm:text-xs font-black uppercase tracking-[0.4em]">
+            <div className="flex items-center justify-center gap-3 text-slate-500 dark:text-slate-400 text-[10px] sm:text-xs font-black uppercase tracking-[0.4em] mt-4">
                <Activity size={12} className="text-fuchsia-500 sm:w-4 sm:h-4" /> 
                Game Ready 
                <Activity size={12} className="text-blue-500 sm:w-4 sm:h-4" />
@@ -95,20 +110,39 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
         </div>
 
         {/* Action Panel */}
-        <div className="w-full max-w-sm sm:max-w-md space-y-4">
+        <div className="w-full max-w-sm sm:max-w-md space-y-4 px-2">
           {!isSyncing ? (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
-              <Button 
-                onClick={handleSync} 
-                variant="primary" 
-                size="lg" 
-                className="w-full py-7 text-2xl rounded-[2.5rem] shadow-fuchsia-600/20 active:scale-95 group overflow-hidden"
-              >
-                <div className="flex items-center gap-3">
-                  <Cpu size={28} className="group-hover:rotate-90 transition-transform duration-500" /> 
-                  START GAME
-                </div>
-              </Button>
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700 w-full">
+              <div className="flex flex-col items-center gap-4 sm:gap-6 w-full">
+                {/* Modern Game Style Button: Start */}
+                <Button 
+                  onClick={() => handleSync('play')} 
+                  variant="primary" 
+                  size="lg" 
+                  className="w-full sm:w-auto px-4 sm:px-20 py-4 sm:py-5 text-xl sm:text-3xl rounded-full border-2 border-fuchsia-400/50 shadow-[0_0_20px_rgba(217,70,239,0.3)] hover:shadow-[0_0_40px_rgba(217,70,239,0.5)] hover:scale-105 active:scale-95 group overflow-hidden transition-all duration-500"
+                >
+                  <div className="flex items-center justify-center gap-3 sm:gap-4 w-full px-2">
+                    <span className="text-xl sm:text-2xl group-hover:animate-pulse transition-transform duration-500 drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]">🎮</span> 
+                    <span className="tracking-tighter font-black drop-shadow-lg text-center whitespace-nowrap">START GAME</span>
+                  </div>
+                </Button>
+
+                {/* Modern Game Style Button: Home */}
+                <Button 
+                  onClick={() => handleSync('home')} 
+                  variant="glass" 
+                  size="lg" 
+                  className="w-full sm:w-[80%] px-4 sm:px-16 py-3 sm:py-3.5 text-sm sm:text-base rounded-full border border-blue-500/40 backdrop-blur-xl shadow-[0_0_10px_rgba(59,130,246,0.15)] hover:shadow-[0_0_20px_rgba(59,130,246,0.3)] hover:scale-105 active:scale-95 overflow-hidden transition-all duration-500 group"
+                >
+                  <div className="flex items-center justify-center gap-2 sm:gap-3 w-full px-2">
+                    <span className="text-base sm:text-lg group-hover:scale-110 transition-transform duration-500">🏠</span> 
+                    <span className="tracking-widest font-black opacity-90 group-hover:opacity-100 italic text-center whitespace-nowrap text-slate-800 dark:text-white">HOME</span>
+                  </div>
+
+                  {/* Scanline effect */}
+                  <div className="absolute inset-0 bg-linear-to-b from-transparent via-blue-400/10 to-transparent h-[4px] w-full animate-[scanline_3s_linear_infinite] pointer-events-none" />
+                </Button>
+              </div>
 
               <div className="flex justify-center gap-8 opacity-40">
                 <div className="flex items-center gap-2 text-[8px] font-black text-slate-500 uppercase tracking-widest">
@@ -129,7 +163,7 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
                </div>
                <div className="flex flex-col gap-2">
                  <div className="text-xs font-black text-fuchsia-500 uppercase tracking-[0.3em] animate-pulse">
-                   Synchronizing...
+                   {syncAction === 'play' ? 'Loading Featured Level...' : 'Synchronizing Neural Link...'}
                  </div>
                  <div className="text-[9px] font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest">
                    Progress: {Math.floor(syncProgress)}%
@@ -140,9 +174,9 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
         </div>
 
         {/* Footer Credit */}
-        <footer className="mt-8">
+        <footer className="mt-8 flex flex-col items-center gap-3">
            <a 
-            href="https://www.facebook.com/riajul.daian.arpon" 
+            href="https://riajuldaian-arpon.vercel.app/" 
             target="_blank" 
             rel="noopener noreferrer"
             className="group flex items-center gap-3 px-6 py-2 glass border-white/5 rounded-full hover:border-blue-500/30 transition-all"
@@ -152,6 +186,19 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
                Created by Arpon
              </span>
            </a>
+
+           <a 
+            href="https://xubilas-webdevcorp.vercel.app/" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="group flex items-center gap-2 sm:gap-3 px-4 sm:px-6 py-2 glass border-white/5 rounded-full hover:border-fuchsia-500/30 transition-all text-center"
+           >
+             <div className="w-1.5 h-1.5 shrink-0 bg-fuchsia-500 rounded-full animate-pulse shadow-[0_0_8px_#d946ef]" />
+             <span className="text-[8px] sm:text-[9px] font-black text-slate-500 group-hover:text-fuchsia-400 uppercase tracking-widest transition-colors leading-tight">
+               Designed and developed by <span className="text-fuchsia-500 block sm:inline">Xubilas Web Dev Corp</span>
+             </span>
+           </a>
+
         </footer>
       </div>
 
@@ -181,7 +228,7 @@ const EntryPage: React.FC<EntryPageProps> = ({ onEnter }) => {
               </div>
 
               <div className="space-y-3">
-                 <Button onClick={handleInstallClick} variant="primary" size="lg" className="w-full py-5 rounded-2xl text-base italic tracking-tighter">
+                 <Button onClick={handleInstallClick} variant="primary" size="lg" className="w-full py-5 rounded-full text-base italic tracking-tighter">
                    <Download size={20} className="mr-2" /> ADD TO HOME SCREEN
                  </Button>
                  <button onClick={() => setShowInstallPopup(false)} className="w-full py-3 text-slate-500 dark:text-slate-400 text-[10px] font-black uppercase tracking-widest">

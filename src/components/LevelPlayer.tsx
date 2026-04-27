@@ -4,7 +4,7 @@ import Button from './Button';
 import GameHole from './GameHole';
 import { soundService } from '../services/soundService';
 import { Trophy, Timer, Heart, ChevronLeft, Pause, Play as PlayIcon, Zap, Info, X, AlertTriangle, RotateCcw } from 'lucide-react';
-import { TARGET_ICONS } from '../constants';
+import { TARGET_ICONS, DEFAULT_BGM } from '../constants';
 
 interface LevelPlayerProps {
   level: GameLevel;
@@ -25,6 +25,7 @@ const LevelPlayer: React.FC<LevelPlayerProps> = ({ level, difficulty, onExit, on
   const [holeStates, setHoleStates] = useState<(TargetType | null)[]>(Array(level.gridSize * level.gridSize).fill(null));
   const [hitIndex, setHitIndex] = useState<number | null>(null);
   const [shake, setShake] = useState(false);
+  const [showTimeBonus, setShowTimeBonus] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
 
@@ -51,12 +52,24 @@ const LevelPlayer: React.FC<LevelPlayerProps> = ({ level, difficulty, onExit, on
     } else {
       soundService.setCustomWhackSound(null);
     }
-  }, [level.logic.customWhackSoundUrl]);
+    
+    if (level.logic.customMissSoundUrl) {
+      soundService.setCustomMissSound(level.logic.customMissSoundUrl);
+    } else {
+      soundService.setCustomMissSound(null);
+    }
+
+    if (level.logic.customHeartLossSoundUrl) {
+      soundService.setCustomHeartLossSound(level.logic.customHeartLossSoundUrl);
+    } else {
+      soundService.setCustomHeartLossSound(null);
+    }
+  }, [level.logic.customWhackSoundUrl, level.logic.customMissSoundUrl, level.logic.customHeartLossSoundUrl]);
 
   useEffect(() => {
     if (gameState === 'playing') {
-      const bgmType = level.logic.bgmType || 'energetic';
-      const customUrl = level.logic.customBgmUrl || '';
+      const bgmType = level.logic.bgmType || 'custom';
+      const customUrl = level.logic.customBgmUrl || DEFAULT_BGM;
       if (bgmType !== 'none') {
         soundService.startBGM(bgmType as any, customUrl);
       }
@@ -107,8 +120,23 @@ const LevelPlayer: React.FC<LevelPlayerProps> = ({ level, difficulty, onExit, on
           const n = [...prev]; 
           if (n[idx] === selected) {
             n[idx] = null;
-            if (gameStateRef.current === 'playing' && level.logic.gameType === 'Focus' && (selected === 'dog' || selected === 'rat')) {
-              setLives(l => Math.max(0, l - 1));
+            
+            const isMissLifeLoss = level.logic.lifeLossTargetsOnMiss?.includes(selected) ?? false;
+            // Fallback for classic healthMode behavior if needed, currently we use the custom array
+            // If they didn't define it and it's focus mode, maybe fallback:
+            const defaultHealthModeLoss = level.logic.gameType === 'Focus' && (selected === 'dog' || selected === 'rat');
+
+            if (gameStateRef.current === 'playing') {
+              if (isMissLifeLoss || (level.logic.lifeLossTargetsOnMiss === undefined && defaultHealthModeLoss)) {
+                soundService.playHeartLoss();
+                setLives(l => Math.max(0, l - 1));
+                setCombo(0);
+                setShake(true);
+                setTimeout(() => setShake(false), 300);
+              } else if (level.logic.targetScores[selected] > 0) {
+                // missed a good target, reset combo streak
+                setCombo(0);
+              }
             }
           }
           return n; 
@@ -184,12 +212,34 @@ const LevelPlayer: React.FC<LevelPlayerProps> = ({ level, difficulty, onExit, on
       else navigator.vibrate(40);
     }
 
-    setCombo(c => c + 1);
-    if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
-    comboTimeoutRef.current = setTimeout(() => setCombo(0), 1200);
-
     const basePts = level.logic.targetScores[type] || 0;
-    const comboBonus = Math.floor(combo / 3);
+    
+    // Check if target is a custom life loss target, fallback to original logic
+    const isLifeLoss = level.logic.lifeLossTargetsOnWhack !== undefined 
+      ? level.logic.lifeLossTargetsOnWhack.includes(type)
+      : (type === 'hazard' || basePts <= -15);
+      
+    const isPointMinus = basePts < 0;
+
+    let currentCombo = combo;
+
+    if (isLifeLoss || isPointMinus) {
+      setCombo(0);
+      currentCombo = 0;
+    } else {
+      setCombo(c => {
+         const newCombo = c + 1;
+         if (newCombo > 0 && newCombo % 5 === 0) {
+            setTimeLeft(t => t + 5);
+            setShowTimeBonus(true);
+            setTimeout(() => setShowTimeBonus(false), 1200);
+         }
+         return newCombo;
+      });
+      currentCombo = combo + 1;
+    }
+
+    const comboBonus = Math.floor(currentCombo / 3);
     const pts = basePts > 0 ? basePts + comboBonus : basePts;
     
     setScore(s => Math.max(0, s + pts));
@@ -197,12 +247,12 @@ const LevelPlayer: React.FC<LevelPlayerProps> = ({ level, difficulty, onExit, on
     setHitIndex(idx);
     setTimeout(() => setHitIndex(null), 300);
 
-    if (type === 'hazard' || basePts <= -15) {
-      soundService.playBeep(true);
+    if (isLifeLoss) {
+      soundService.playHeartLoss();
       triggerShake();
       setLives(l => l - 1);
-    } else if (basePts < 0) {
-      soundService.playBeep(true);
+    } else if (isPointMinus) {
+      soundService.playMiss();
     } else {
       soundService.playWhack();
     }
@@ -328,8 +378,13 @@ const LevelPlayer: React.FC<LevelPlayerProps> = ({ level, difficulty, onExit, on
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
-          <div className={`flex items-center gap-1 font-black tabular-nums text-sm sm:text-lg ${timeLeft <= 5 ? 'text-rose-500 animate-pulse' : 'text-emerald-500'}`}>
+          <div className={`relative flex items-center gap-1 font-black tabular-nums text-sm sm:text-lg ${timeLeft <= 5 ? 'text-rose-500 animate-pulse' : 'text-emerald-500'}`}>
             <Timer size={14} className="sm:w-[18px] sm:h-[18px]" /> {timeLeft}s
+            {showTimeBonus && (
+              <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-emerald-500 text-xs sm:text-sm font-black whitespace-nowrap drop-shadow-md animate-in slide-in-from-bottom-2 fade-in duration-300">
+                +5s!
+              </div>
+            )}
           </div>
           <button 
             onClick={handleRestart}

@@ -2,8 +2,7 @@
 import React, { useState, useRef } from 'react';
 import { UserStats } from '../types';
 import Button from './Button';
-import { X, Save, Camera, Volume2, VolumeX, Moon, Sun, LogOut, Upload, Loader2, RefreshCcw, Music, Link, Trash2, PlayCircle } from 'lucide-react';
-import { getSupabase } from '../services/supabaseClient';
+import { X, Save, Camera, Volume2, VolumeX, Moon, Sun, LogOut, Upload, Loader2, RefreshCcw, Music, Link, Trash2, PlayCircle, Zap } from 'lucide-react';
 import { soundService } from '../services/soundService';
 
 interface SettingsModalProps {
@@ -18,9 +17,16 @@ interface SettingsModalProps {
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
   onLogout: () => void;
+  onLogin: () => void;
+  sessionUser: any;
   customAppBgm: string | null;
   onUpdateBgm: (url: string | null) => void;
 }
+
+import { auth } from '../firebase';
+import { uploadToSupabase } from '../supabase';
+import { compressImageFallback } from '../utils/imageCompressor';
+import { AUDIO_PRESETS, DEFAULT_BGM } from '../constants';
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ 
   isOpen, 
@@ -34,6 +40,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   theme,
   onToggleTheme,
   onLogout,
+  onLogin,
+  sessionUser,
   customAppBgm,
   onUpdateBgm
 }) => {
@@ -42,84 +50,82 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [bgmUrl, setBgmUrl] = useState(customAppBgm || '');
   const [uploading, setUploading] = useState(false);
   const [bgmUploading, setBgmUploading] = useState(false);
-  const [pendingBgmFile, setPendingBgmFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgmInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
   const handleSave = async () => {
-    let finalBgmUrl = bgmUrl;
-    
-    if (pendingBgmFile) {
-      setBgmUploading(true);
-      const uploadedUrl = await uploadBgmToSupabase(pendingBgmFile);
-      if (uploadedUrl) {
-        finalBgmUrl = uploadedUrl;
-      } else {
-        // If upload failed, clear the base64 to avoid local storage bloat
-        finalBgmUrl = '';
-        alert("Audio upload failed. Settings saved without custom music.");
-      }
-      setBgmUploading(false);
-    } else if (finalBgmUrl.startsWith('data:')) {
-      // Safety check: don't allow base64 strings to be saved
-      finalBgmUrl = '';
-    }
-
     onUpdateUser({ username: username.trim() || user.username, avatar });
-    onUpdateBgm(finalBgmUrl.trim() || null);
+    onUpdateBgm(bgmUrl.trim() || null);
     onClose();
   };
 
-  const uploadBgmToSupabase = async (file: File): Promise<string | null> => {
-    try {
-      const supabase = getSupabase();
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return null;
-
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${session.user.id}-${Date.now()}.${fileExt}`;
-      const filePath = `bgm/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('level-assets')
-        .upload(filePath, file);
-
-      if (uploadError) {
-        const { error: fallbackError } = await supabase.storage
-          .from('level-icons')
-          .upload(filePath, file);
-        if (fallbackError) throw uploadError;
-      }
-
-      const { data: { publicUrl } } = supabase.storage
-        .from(uploadError ? 'level-icons' : 'level-assets')
-        .getPublicUrl(filePath);
-
-      return publicUrl;
-    } catch (error) {
-      console.error("BGM upload failed:", error);
-      return null;
-    }
-  };
-
-  const handleBgmUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBgmUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      alert("Audio file too large (Max 10MB).");
+    if (file.size > 5 * 1024 * 1024) {
+      alert("Audio file too large. Max 5MB.");
       return;
     }
 
-    setPendingBgmFile(file);
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setBgmUrl(reader.result as string);
-      soundService.playClick();
+    setBgmUploading(true);
+    const currentUser = auth.currentUser;
+    const isGuest = !currentUser;
+
+    const processLocalBgm = () => {
+      // Firestore limit is 1MB. Base64 adds 33%. Safe cap is ~700KB.
+      if (file.size > 700 * 1024) {
+        alert(isGuest 
+          ? "Local storage limit reached (700KB). Signed-in users can upload up to 5MB." 
+          : "Storage unavailable: File exceeds the 700KB limit for database fallback. Configure Supabase or use a smaller file.");
+        setBgmUploading(false);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        setBgmUrl(result);
+        if (bgmEnabled) {
+          soundService.startBGM('custom', result);
+        } else {
+          soundService.playClick();
+        }
+        setBgmUploading(false);
+      };
+      reader.onerror = () => {
+        setBgmUploading(false);
+        alert("Failed to process local file.");
+      }
+      reader.readAsDataURL(file);
     };
-    reader.readAsDataURL(file);
+
+    if (isGuest) {
+      processLocalBgm();
+      return;
+    }
+
+    const uid = currentUser?.uid || 'guest';
+    const fileExtension = file.name.split('.').pop() || 'mp3';
+
+    // 1. Try Supabase
+    const supabaseUrl = await uploadToSupabase(file, `bgm/${uid}_${Date.now()}.${fileExtension}`, 'level-assets');
+    if (supabaseUrl) {
+      setBgmUrl(supabaseUrl);
+      if (bgmEnabled) {
+        soundService.startBGM('custom', supabaseUrl);
+      } else {
+        soundService.playClick();
+      }
+      setBgmUploading(false);
+      return;
+    }
+
+    // 2. Fallback to schema (Data URL)
+    console.warn("Supabase upload failed, falling back to schema base64.");
+    alert("Audio upload to Supabase failed. Fallback to offline mode is limited to 700KB.");
+    processLocalBgm();
   };
 
   const handleRandomizeAvatar = () => {
@@ -131,9 +137,39 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setUploading(true);
+    if (file.size > 5 * 1024 * 1024) {
+      alert("Image file too large (Max 5MB).");
+      return;
+    }
 
-    const fallbackToLocal = () => {
+    setUploading(true);
+    const currentUser = auth.currentUser;
+    const isGuest = !currentUser;
+
+    const processLocalAvatar = async () => {
+      // Automatically compress images > 700KB to fit Firebase limits.
+      // If it's an image (and not a GIF), we can try shrinking it via canvas.
+      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+      if (file.size > 700 * 1024 && file.type.startsWith('image/') && !isGif) {
+         try {
+           const compressedBase64 = await compressImageFallback(file, 700);
+           setAvatar(compressedBase64);
+           setUploading(false);
+           return;
+         } catch (e) {
+           console.warn("Compression failed", e);
+           // Fallthrough to standard sizing checks
+         }
+      }
+      
+      // Firestore limit is 1MB. Base64 adds 33%. Safe cap is ~700KB.
+      if (file.size > 700 * 1024) {
+        alert(isGuest 
+          ? "Local storage limit reached (700KB). Signed-in users can upload up to 5MB." 
+          : "Storage unavailable: Image exceeds limit and couldn't be compressed. Configure Supabase or use a smaller file.");
+        setUploading(false);
+        return;
+      }
       const reader = new FileReader();
       reader.onloadend = () => {
         setAvatar(reader.result as string);
@@ -146,42 +182,30 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       reader.readAsDataURL(file);
     };
 
-    try {
-      let supabase;
-      try {
-        supabase = getSupabase();
-      } catch (err) {
-        console.warn("Supabase not configured, falling back to local avatar.");
-        fallbackToLocal();
-        return;
-      }
-
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        fallbackToLocal();
-        return;
-      }
-
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${session.user.id}-${Math.random()}.${fileExt}`;
-      const filePath = `avatars/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('avatars')
-        .upload(filePath, file);
-
-      if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('avatars')
-        .getPublicUrl(filePath);
-
-      setAvatar(publicUrl);
-      setUploading(false);
-    } catch (error: any) {
-      console.error("Avatar upload failed, falling back to local:", error);
-      fallbackToLocal();
+    if (isGuest) {
+      await processLocalAvatar();
+      return;
     }
+
+    const uid = currentUser?.uid || 'guest';
+    let fileExtension = file.name.split('.').pop();
+    if (!fileExtension || fileExtension === file.name) {
+      fileExtension = file.type.split('/').pop() || 'png';
+    }
+    if (file.type === 'image/gif') fileExtension = 'gif';
+
+    // 1. Try Supabase
+    const supabaseUrl = await uploadToSupabase(file, `avatars/${uid}_${Date.now()}.${fileExtension}`, 'avatars');
+    if (supabaseUrl) {
+      setAvatar(supabaseUrl);
+      setUploading(false);
+      return;
+    }
+
+    // 2. Fallback to schema (Data URL)
+    console.warn("Supabase upload failed, falling back to schema base64.");
+    alert("Supabase upload failed. Ensure bucket 'avatars' exists. Falling back to offline mode.");
+    await processLocalAvatar();
   };
 
   return (
@@ -200,6 +224,27 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         <div className="space-y-5 overflow-y-auto no-scrollbar pr-1 pb-4">
+          {!sessionUser && (
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-600/10 to-indigo-600/10 border border-blue-500/20 shadow-lg animate-in slide-in-from-top-4 duration-500">
+               <div className="flex items-start gap-3">
+                  <div className="p-2.5 bg-blue-600/20 rounded-xl text-blue-500">
+                     <Zap size={16} className="animate-pulse" />
+                  </div>
+                  <div className="flex-1 space-y-2">
+                     <p className="text-[10px] font-black text-blue-600 dark:text-blue-400 uppercase tracking-widest leading-relaxed">
+                        Sign in to sync your Neural Identity and custom soundtracks across devices.
+                     </p>
+                     <button 
+                        onClick={onLogin}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-lg shadow-blue-600/20"
+                     >
+                        <LogOut size={10} className="rotate-180" /> Connect Profile
+                     </button>
+                  </div>
+               </div>
+            </div>
+          )}
+
           <div className="p-4 bg-slate-100/50 dark:bg-white/5 rounded-2xl border border-slate-200 dark:border-white/10">
             <div className="flex items-center gap-4">
               <div className="relative shrink-0">
@@ -226,7 +271,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   type="file" 
                   ref={fileInputRef} 
                   className="hidden" 
-                  accept="image/*" 
+                  accept="image/png, image/jpeg, image/gif, image/*" 
                   onChange={handleAvatarUpload} 
                 />
               </div>
@@ -274,10 +319,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="p-5 bg-slate-100/50 dark:bg-white/5 rounded-[2rem] border border-slate-200 dark:border-white/10 space-y-4">
              <div className="flex items-center gap-2 mb-1">
                 <Music size={16} className="text-blue-500" />
-                <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-900 dark:text-white">Neural Soundtrack</h3>
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-900 dark:text-white">Neural Soundtrack (BGM)</h3>
              </div>
              
              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2 py-1">
+                   {AUDIO_PRESETS.bgm.map(preset => (
+                      <button
+                         key={preset.url}
+                         onClick={() => {
+                            setBgmUrl(preset.url);
+                            if (bgmEnabled) soundService.startBGM('custom', preset.url);
+                         }}
+                         className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all ${bgmUrl === preset.url ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-200 dark:bg-white/5 border-slate-300 dark:border-white/10 text-slate-500 dark:text-slate-400'}`}
+                      >
+                         {preset.name}
+                      </button>
+                   ))}
+                </div>
+                
                 <div className="flex gap-2">
                    <div className="relative flex-1">
                       <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
@@ -316,12 +376,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                    />
                 </div>
 
-                {bgmUrl && (
+                {bgmUrl && bgmUrl !== DEFAULT_BGM && (
                   <button 
-                    onClick={() => { setBgmUrl(''); soundService.playClick(); }}
-                    className="w-full py-2 flex items-center justify-center gap-2 text-[8px] font-black uppercase tracking-widest text-rose-500 hover:bg-rose-500/5 rounded-lg transition-all"
+                    onClick={() => { setBgmUrl(DEFAULT_BGM); soundService.playClick(); }}
+                    className="w-full py-2 flex items-center justify-center gap-2 text-[8px] font-black uppercase tracking-widest text-emerald-500 hover:bg-emerald-500/5 rounded-lg transition-all"
                   >
-                    <Trash2 size={12} /> Reset to Default AI
+                    <RefreshCcw size={12} /> RESTORE ORIGINAL XUBILAS BGM
                   </button>
                 )}
              </div>
@@ -329,15 +389,26 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         <div className="flex flex-col gap-2 pt-4 shrink-0">
-           <Button onClick={handleSave} variant="primary" size="lg" className="w-full py-5 rounded-2xl text-base italic tracking-tighter">
-             CONFIRM UPDATES
+           {sessionUser && (
+             <div className="space-y-3">
+               <div className="flex items-center justify-between px-4 py-2 bg-emerald-600/10 dark:bg-emerald-500/5 rounded-xl border border-emerald-600/20 dark:border-emerald-500/10">
+                  <div className="flex items-center gap-2">
+                     <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]" />
+                     <span className="text-[8px] font-black text-emerald-600 dark:text-emerald-500 uppercase tracking-widest italic">Neural Link Active</span>
+                  </div>
+                  <span className="text-[8px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest font-mono">ID: {sessionUser.uid.substring(0, 8)}</span>
+               </div>
+               <button 
+                 onClick={onLogout} 
+                 className="w-full py-4 flex items-center justify-center gap-2 text-rose-500 text-[11px] font-black uppercase tracking-[0.2em] hover:bg-rose-500/10 rounded-2xl transition-all active:scale-95 border border-rose-500/10"
+               >
+                 <LogOut size={16} /> DISCONNECT SESSION
+               </button>
+             </div>
+           )}
+           <Button onClick={handleSave} variant="primary" size="lg" className="w-full py-5 rounded-[2rem] text-base italic font-black tracking-tighter mt-2 border-b-4 border-black/20">
+             SAVE & SYNC
            </Button>
-           <button 
-             onClick={onLogout} 
-             className="w-full py-4 mt-2 flex items-center justify-center gap-2 text-rose-500 text-[11px] font-black uppercase tracking-[0.2em] hover:bg-rose-500/10 rounded-2xl transition-all active:scale-95"
-           >
-             <LogOut size={16} /> DISCONNECT SESSION
-           </button>
         </div>
       </div>
     </div>
